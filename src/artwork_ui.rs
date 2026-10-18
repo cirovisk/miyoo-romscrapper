@@ -46,8 +46,14 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
                 "Automatically use the first SteamGridDB game result",
             )
             .on_hover_text(
-                "Turn this off to review search results before downloading and to mark arcade ROMs.",
+                "Turn this off to review results and choose the correct game before downloading.",
             );
+            if !settings.auto_first_result {
+                muted(
+                    ui,
+                    "Manual selection: edit the title and click Search, then click Use beside the correct game. If none match, search again, choose a local image, or skip the ROM.",
+                );
+            }
             ui.checkbox(
                 &mut settings.choose_artwork,
                 "Choose artwork from a gallery",
