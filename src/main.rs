@@ -255,6 +255,10 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut self.settings.extensions).desired_width(f32::INFINITY));
                 muted(ui, "Comma-separated extensions. ZIPs use the archive filename without extracting its contents.");
             });
+            ui.checkbox(
+                &mut self.settings.only_missing,
+                "Only process ROMs without artwork in the destination",
+            );
         });
     }
     fn gamelist(&mut self, ui: &mut egui::Ui) {
@@ -321,6 +325,14 @@ impl App {
         muted(ui, "Choose artwork that fits your library.");
         ui.add_space(8.0);
         card(ui, |ui| {
+            ui.checkbox(
+                &mut self.settings.auto_first_result,
+                "Automatically use the first SteamGridDB game result",
+            );
+            muted(
+                ui,
+                "Turn this off to review search results before downloading.",
+            );
             ui.label(RichText::new("Miyoo Mini / OnionOS presets").strong());
             ui.horizontal_wrapped(|ui| {
                 for (label, width, height) in [
@@ -485,6 +497,13 @@ impl App {
                         });
                     if ui.button("Skip this ROM").clicked() {
                         action = Some(ReviewAction::Skip);
+                    }
+                    if ui.button("Choose a local image…").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+                            .pick_file()
+                    {
+                        action = Some(ReviewAction::LocalImage(path));
                     }
                 });
         }

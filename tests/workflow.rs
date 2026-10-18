@@ -1,5 +1,8 @@
 use rom_art_rs::{
-    engine::{Event, ReviewAction, Settings, generate_local_gamelist, resolve, run_with_provider},
+    engine::{
+        Event, Resolved, ReviewAction, Settings, generate_local_gamelist, resolve,
+        run_with_provider,
+    },
     provider::{Candidate, Credentials, Provider, ServiceStopped, choose_media, exact_match},
 };
 use std::{
@@ -182,6 +185,7 @@ fn ambiguous_result_can_be_selected_manually() {
     let selected = resolve(
         &provider,
         Path::new("Game.nes"),
+        false,
         &AtomicBool::new(false),
         &|event| {
             if let Event::Review {
@@ -196,7 +200,7 @@ fn ambiguous_result_can_be_selected_manually() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(selected.id, 2);
+    assert!(matches!(selected, Resolved::Game(Candidate { id: 2, .. })));
     handle.join().unwrap();
 }
 
@@ -212,6 +216,7 @@ fn unmatched_game_supports_research_and_cancellation() {
     let selected = resolve(
         &provider,
         Path::new("Unknown.nes"),
+        false,
         &AtomicBool::new(false),
         &|event| {
             if let Event::Review { answer, .. } = event {
@@ -223,12 +228,12 @@ fn unmatched_game_supports_research_and_cancellation() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(selected.id, 2);
+    assert!(matches!(selected, Resolved::Game(Candidate { id: 2, .. })));
     handle.join().unwrap();
     let (base, handle) = server(|_| vec![json(serde_json::json!([]))]);
     let provider = Provider::with_base(credentials(), &base).unwrap();
     let stop = AtomicBool::new(false);
-    let error = resolve(&provider, Path::new("Unknown.nes"), &stop, &|_| {
+    let error = resolve(&provider, Path::new("Unknown.nes"), false, &stop, &|_| {
         stop.store(true, Ordering::Relaxed)
     })
     .unwrap_err();

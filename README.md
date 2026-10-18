@@ -18,7 +18,9 @@ The app uses `eframe/egui` and the desktop portal file picker through `rfd`. It 
 2. In **Connection**, paste your personal [SteamGridDB API key](https://www.steamgriddb.com/profile/preferences/api). You can also provide it using `STEAMGRIDDB_API_KEY`. The key stays in memory and is never written to configuration, cache or logs.
 3. In **Artwork**, choose covers, banners/heroes, logos, icons or a composition of three images. Choose output dimensions and naming options.
 4. In **Gamelist**, choose the export format and whether to generate lists after downloading.
-5. Click **Download artwork**. Ambiguous matches let you select a game, search again or skip the ROM.
+5. Click **Download artwork**. By default, the first SteamGridDB game result is selected; turn that option off to review results. The review dialog also lets you search again, skip, or choose a local image.
+
+On **Collection**, enable **Only process ROMs without artwork in the destination** to skip ROMs whose target PNG already exists. The game list still includes the full ROM folder.
 
 The API key is needed for downloads. **Generate lists locally** works without an API key or internet access. Window preferences last for the current session.
 
@@ -68,9 +70,9 @@ Writes are atomic per file. Malformed XML and duplicate game paths are rejected.
 
 ## Matching and limits
 
-SteamGridDB searches use filenames with recognized trailing region, language, revision and disc tags removed. Unknown hack tags and subtitles are retained. A unique exact title match is accepted automatically, ignoring case and repeated spaces; other results require your selection. This does not establish the ROM's platform or edition. ZIP archives are matched by their external name without extraction or hash calculation.
+SteamGridDB searches use filenames with recognized trailing region, language, revision and disc tags removed. Unknown hack tags and subtitles are retained. The first search result is selected by default; disable automatic selection to review each game's results. This does not establish the ROM's platform or edition. ZIP archives are matched by their external name without extraction or hash calculation. A local image can be selected from the review dialog if the game is missing from SteamGridDB.
 
-Artwork selection requests static PNG/JPEG/WebP images and prefers matching orientation, then community score, from the first page of results. There is no artwork gallery picker. Local compositions require a hero, cover and logo. Not all games, hacks or translations have matching artwork in the catalog.
+Artwork selection requests static PNG/JPEG/WebP images and prefers matching orientation, then community score, from the first page of results. Local images are converted to PNG and fit to the chosen dimensions without cropping. Local compositions require a hero, cover and logo. Not all games, hacks or translations have matching artwork in the catalog.
 
 Requests are sequential with a 30-second timeout. Authentication, quota or server errors stop the batch. Image bytes are cached in the artwork folder's `.rom-art-cache`; metadata is queried again when necessary. The API key is sent only to API requests, never to artwork URLs. HTTP redirects are refused. The cache has no expiry or automatic cleanup.
 

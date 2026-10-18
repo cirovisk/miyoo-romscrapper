@@ -1,5 +1,5 @@
 use crate::{
-    provider::{Candidate, Credentials, Provider, ServiceStopped, exact_match},
+    provider::{Candidate, Credentials, Provider, ServiceStopped},
     rom::{cancelled, scan, title},
 };
 use anyhow::{Context, Result, bail};
@@ -27,6 +27,8 @@ pub struct Settings {
     pub height: u32,
     pub overwrite: bool,
     pub backup_existing: bool,
+    pub auto_first_result: bool,
+    pub only_missing: bool,
     pub gamelist: bool,
     pub onion_images: bool,
     pub gamelist_format: crate::gamelist::Format,
@@ -44,6 +46,8 @@ impl Default for Settings {
             height: 360,
             overwrite: false,
             backup_existing: true,
+            auto_first_result: true,
+            only_missing: false,
             gamelist: true,
             onion_images: false,
             gamelist_format: crate::gamelist::Format::EmulationStation,
@@ -81,20 +85,28 @@ pub enum Event {
 pub enum ReviewAction {
     Select(Candidate),
     Search(String),
+    LocalImage(PathBuf),
     Skip,
+}
+
+#[derive(Debug)]
+pub enum Resolved {
+    Game(Candidate),
+    LocalImage(PathBuf),
 }
 
 pub fn resolve(
     provider: &Provider,
     path: &Path,
+    auto_first_result: bool,
     stop: &AtomicBool,
     emit: &impl Fn(Event),
-) -> Result<Option<Candidate>> {
+) -> Result<Option<Resolved>> {
     let mut query = title(path)?;
     loop {
         let candidates = provider.search(&query, stop)?;
-        if let Some(candidate) = exact_match(&query, &candidates) {
-            return Ok(Some(candidate.clone()));
+        if auto_first_result && let Some(candidate) = candidates.first() {
+            return Ok(Some(Resolved::Game(candidate.clone())));
         }
         let (tx, rx) = mpsc::channel();
         emit(Event::Review {
@@ -107,10 +119,11 @@ pub fn resolve(
             cancelled(stop)?;
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(ReviewAction::Select(candidate)) if candidates.contains(&candidate) => {
-                    return Ok(Some(candidate));
+                    return Ok(Some(Resolved::Game(candidate)));
                 }
                 Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
                 Ok(ReviewAction::Skip) => return Ok(None),
+                Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
                 Ok(ReviewAction::Search(search)) => {
                     query = search;
                     break;
@@ -366,7 +379,17 @@ pub fn run_with_provider(
     if !(1..=4096).contains(&settings.width) || !(1..=4096).contains(&settings.height) {
         bail!("Allowed dimensions: 1 to 4096");
     }
-    let paths = scan(&settings.root, &settings.extensions)?;
+    let all_paths = scan(&settings.root, &settings.extensions)?;
+    let paths = if settings.only_missing {
+        all_paths
+            .iter()
+            .cloned()
+            .into_iter()
+            .filter(|rom| image_path(&settings, rom).is_ok_and(|p| !p.is_file()))
+            .collect::<Vec<_>>()
+    } else {
+        all_paths.clone()
+    };
     validate_image_paths(&settings, &paths)?;
     let total = paths.len();
     emit(Event::Log(format!("Found {total} ROMs")));
@@ -385,10 +408,18 @@ pub fn run_with_provider(
         } else {
             emit(Event::Log(format!("Matching: {}", relative.display())));
             let result = (|| -> Result<Option<String>> {
-                let Some(game) = resolve(provider, path, stop, &emit)? else {
+                let Some(resolved) =
+                    resolve(provider, path, settings.auto_first_result, stop, &emit)?
+                else {
                     return Ok(None);
                 };
-                let image = render(provider, &game, &settings, stop)?;
+                let (image, name) = match resolved {
+                    Resolved::Game(game) => (render(provider, &game, &settings, stop)?, game.name),
+                    Resolved::LocalImage(local) => (
+                        fit(&decode(&fs::read(local)?)?, settings.width, settings.height),
+                        title(path)?,
+                    ),
+                };
                 let mut png = Cursor::new(Vec::new());
                 image.write_to(&mut png, ImageFormat::Png)?;
                 cancelled(stop)?;
@@ -400,7 +431,7 @@ pub fn run_with_provider(
                 )? {
                     emit(Event::Log(format!("Artwork backup: {}", backup.display())));
                 }
-                Ok(Some(game.name))
+                Ok(Some(name))
             })();
             match result {
                 Ok(Some(name)) => {
@@ -426,7 +457,7 @@ pub fn run_with_provider(
         emit(Event::Progress(index + 1, total));
     }
     if settings.gamelist {
-        write_gamelist(&settings, &paths, &names, &emit)?;
+        write_gamelist(&settings, &all_paths, &names, &emit)?;
     }
     emit(Event::Log(format!(
         "Finished: {saved} images saved, {skipped} kept or skipped, {failed} need review"
