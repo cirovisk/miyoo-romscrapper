@@ -1,7 +1,7 @@
 use crate::{CARD, card, muted};
 use eframe::egui;
 use rom_art_rs::{
-    engine::Settings,
+    engine::{MAX_CONCURRENCY, Settings},
     provider::{ArtworkType, Candidate, Media},
     worker::ReviewAction,
 };
@@ -20,20 +20,39 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
     muted(ui, "Choose artwork that fits your library.");
     ui.add_space(8.0);
     card(ui, |ui| {
-        ui.checkbox(
-            &mut settings.auto_first_result,
-            "Automatically use the first SteamGridDB game result",
-        )
-        .on_hover_text(
-            "Turn this off to review search results before downloading and to mark arcade ROMs.",
-        );
-        ui.checkbox(
-            &mut settings.choose_artwork,
-            "Choose artwork from a gallery",
-        )
-        .on_hover_text(
-            "After matching a game, compare available SteamGridDB images for the selected type.",
-        );
+        ui.checkbox(&mut settings.turbo_mode, "Turbo mode")
+            .on_hover_text("Suggested for large collections. Automatically uses the first game result and the top-ranked image, skips confirmation and gallery previews, and processes more ROMs in parallel.");
+        ui.horizontal(|ui| {
+            ui.label("Concurrent tasks");
+            ui.add(
+                egui::DragValue::new(&mut settings.concurrency)
+                    .range(1..=MAX_CONCURRENCY)
+                    .speed(1),
+            )
+            .on_hover_text("Sets the maximum number of concurrent workers for each stage: game searches and artwork downloads. Higher values may use more bandwidth or encounter API throttling.");
+        });
+        ui.add_enabled_ui(!settings.turbo_mode, |ui| {
+            ui.checkbox(
+                &mut settings.auto_first_result,
+                "Automatically use the first SteamGridDB game result",
+            )
+            .on_hover_text(
+                "Turn this off to review search results before downloading and to mark arcade ROMs.",
+            );
+            ui.checkbox(
+                &mut settings.choose_artwork,
+                "Choose artwork from a gallery",
+            )
+            .on_hover_text(
+                "After matching a game, compare available SteamGridDB images for the selected type.",
+            );
+        });
+        if settings.choose_artwork && !settings.turbo_mode {
+            muted(
+                ui,
+                "Gallery mode may take longer while artwork previews are downloaded.",
+            );
+        }
         ui.label(egui::RichText::new("Miyoo Mini / OnionOS presets").strong());
         ui.horizontal_wrapped(|ui| {
             for (label, width, height) in [

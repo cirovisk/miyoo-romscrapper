@@ -32,12 +32,12 @@ pub(crate) fn draw(ui: &mut egui::Ui, settings: &mut Settings, paths_ready: bool
             );
             crate::muted(
                 ui,
-                "Select one system folder. OnionOS displays games from subfolders as a flat list. Refresh all ROMs on the Miyoo after exporting.",
+                "Each selected system folder gets its own game list. OnionOS displays games from subfolders as a flat list. Refresh all ROMs on the Miyoo after exporting.",
             );
         }
         crate::muted(
             ui,
-            "Select one system folder. Existing entries and custom names are retained.",
+            "Each selected system folder gets its own game list. Existing entries and custom names are retained.",
         );
         ui.checkbox(&mut settings.backup_existing, "Back up replaced files")
             .on_hover_text("Applies to artwork and game lists. Each backup has a unique name.");

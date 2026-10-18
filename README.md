@@ -14,11 +14,11 @@ The app uses `eframe/egui` and the desktop portal file picker through `rfd`. It 
 
 ## Getting started
 
-1. In **Collection**, select a single system's ROM folder and an artwork output folder. For arcade systems, enable **Arcade ROMs (MAME / FBNeo)** before starting.
+1. In **Collection**, add one or more system ROM folders and choose artwork output folders. Enable **Arcade** beside any MAME/FBNeo system.
 2. In **Connection**, paste your personal [SteamGridDB API key](https://www.steamgriddb.com/profile/preferences/api). You can also provide it using `STEAMGRIDDB_API_KEY`. By default the key stays in memory only. To keep it between sessions, enable **Remember this key securely** and click **Save key securely**; it is stored in the system credential wallet (KWallet on KDE), not in app settings, cache or logs.
-3. In **Artwork**, choose one of SteamGridDB's artwork types: covers, banners/heroes, logos or icons. Choose output dimensions and naming options.
+3. In **Artwork**, choose one of SteamGridDB's artwork types: covers, banners/heroes, logos or icons. Choose output dimensions and naming options. **Turbo mode** automatically uses the first game result and highest-ranked artwork, skipping game confirmation and gallery previews. It is suggested for large collections. Set concurrent searches/downloads from 1 to 8; higher values may use more bandwidth or encounter API throttling.
 4. In **Gamelist**, choose the export format and whether to generate lists after downloading.
-5. Click **Download artwork**. By default, the first SteamGridDB game result is selected; turn that option off to review results. The review dialog also has a per-ROM **Arcade ROM (MAME / FBNeo)** override. Arcade mode checks `.dat` and `.xml` catalogs beside the ROMs, then existing `gamelist.xml` / `miyoogamelist.xml` names, then saved aliases. If none match, edit the search or select a result manually; the selected title is saved in `.rom-art-arcade-aliases.json` by ROM-relative path. Optionally enable **Choose artwork from a gallery** to preview and select an image after matching a game. The review dialog also lets you skip or choose a local image.
+5. Click **Download artwork**. Outside Turbo mode, the first SteamGridDB game result is selected by default; turn that option off to review results. The review dialog also has a per-ROM **Arcade ROM (MAME / FBNeo)** override. Arcade mode checks `.dat` and `.xml` catalogs beside the ROMs, then existing `gamelist.xml` / `miyoogamelist.xml` names, then saved aliases. If none match, edit the search or select a result manually; the selected title is saved in `.rom-art-arcade-aliases.json` by ROM-relative path. Optionally enable **Choose artwork from a gallery** to preview and select an image after matching a game. The review dialog also lets you skip or choose a local image. Turbo mode temporarily overrides the game/gallery options for that run; your saved choices remain unchanged.
 
 On **Collection**, enable **Only process ROMs without artwork in the destination** to skip ROMs whose target PNG already exists. When game list generation is enabled, exported lists still include the full ROM folder.
 
@@ -38,7 +38,7 @@ These presets enable **Use OnionOS folder and filenames**: `Game.zip` produces `
 
 ![OnionOS artwork presets](docs/interface-onion-artwork.png)
 
-Select one system folder such as `Roms/GBA`, rather than the entire `Roms` directory. The `Imgs` output folder follows the ROM folder automatically. Changing a filename convention does not rename or remove existing artwork. If two ROMs would produce the same image filename, including case-only collisions on FAT cards, the operation stops before downloading or exporting.
+Add each system folder separately (click **Add system folder** once per system), rather than selecting the entire `Roms` directory. You can set an independent artwork output folder for each system; otherwise, systems share the optional output base in separate system-named subfolders. With OnionOS naming enabled, the `Imgs` output folder follows each ROM folder automatically. Changing a filename convention does not rename or remove existing artwork. If two ROMs would produce the same image filename, including case-only collisions on FAT cards, the operation stops before downloading or exporting.
 
 With OnionOS naming disabled, the selected output folder is used and ROM extensions remain in image names: `Game.zip` produces `Game.zip.png`. This supports the original naming convention.
 
@@ -74,7 +74,7 @@ SteamGridDB searches use filenames with recognized trailing region, language, re
 
 Artwork selection requests static PNG/JPEG/WebP images and prefers matching orientation, then community score, from the first page of results when the gallery is off. Local images are converted to PNG and fit to the chosen dimensions without cropping. Not all games, hacks or translations have matching artwork in the catalog.
 
-Requests are sequential with a 30-second timeout. Authentication, quota or server errors stop the batch. Downloaded image bytes are temporarily cached in the artwork folder's `.rom-art-cache` during an operation and removed when it ends, including cancellation and errors. The API key is sent only to API requests, never to artwork URLs. HTTP redirects are refused. Secure persistence uses the operating system's credential store: Secret Service on Linux, Keychain on macOS, and Windows Credential Manager on Windows.
+Initial game searches are pipelined with the selected concurrency; the next search starts when you decide the current game's match. Game and gallery dialogs are presented one at a time. Gallery previews load in parallel, and the selected number of artworks are rendered and downloaded concurrently while the next ROM is matched. Requests have a 30-second timeout. Authentication, quota or server errors stop that system's batch, then processing continues with the next selected system. Downloaded image bytes are temporarily cached in the artwork folder's `.rom-art-cache` during an operation and removed when it ends, including cancellation and errors. The API key is sent only to API requests, never to artwork URLs. HTTP redirects are refused. Secure persistence uses the operating system's credential store: Secret Service on Linux, Keychain on macOS, and Windows Credential Manager on Windows.
 
 ## Development and verification
 

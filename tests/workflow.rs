@@ -389,6 +389,42 @@ fn arcade_mode_researches_catalog_title_and_saves_alias() {
 }
 
 #[test]
+fn initially_enabled_arcade_mode_searches_the_catalog_title() {
+    let root = tempfile::tempdir().unwrap();
+    let rom = root.path().join("mslug.zip");
+    fs::write(&rom, b"rom").unwrap();
+    fs::write(
+        root.path().join("fbneo.dat"),
+        b"game ( name \"mslug\" description \"Metal Slug\" )",
+    )
+    .unwrap();
+    let (base, handle) = server(|_| vec![json(serde_json::json!([{"id":7,"name":"Metal Slug"}]))]);
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let selected = resolve(
+        &provider,
+        &rom,
+        ResolveOptions {
+            auto_first_result: true,
+            choose_artwork: false,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: Some(root.path().to_path_buf()),
+            arcade_mode: Arc::new(AtomicBool::new(true)),
+        },
+        &AtomicBool::new(false),
+        &|_| {},
+    )
+    .unwrap();
+
+    assert!(matches!(
+        selected,
+        Some(Resolved::Game(Candidate { id: 7, .. }, None))
+    ));
+    assert!(handle.join().unwrap()[0].contains("/search/autocomplete/Metal%20Slug"));
+}
+
+#[test]
 fn unmatched_game_supports_research_and_cancellation() {
     let (base, handle) = server(|_| {
         vec![

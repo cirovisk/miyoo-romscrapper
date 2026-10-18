@@ -11,7 +11,8 @@ use rom_art_rs::{
     worker::{Event, ReviewAction},
 };
 use std::{
-    path::PathBuf,
+    collections::HashSet,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -53,12 +54,13 @@ struct Review {
 }
 struct App {
     settings: Settings,
-    root: String,
+    roots: Vec<collection_ui::SystemFolder>,
     output: String,
     receiver: Option<mpsc::Receiver<Event>>,
     stop: Arc<AtomicBool>,
     logs: Vec<String>,
     progress: (usize, usize),
+    system_progress: (usize, usize, Option<String>),
     preview: Option<egui::TextureHandle>,
     preview_name: String,
     tab: usize,
@@ -90,12 +92,13 @@ impl Default for App {
         };
         Self {
             settings,
-            root: String::new(),
+            roots: Vec::new(),
             output: String::new(),
             receiver: None,
             stop: Arc::new(AtomicBool::new(false)),
             logs: vec!["Ready to organize artwork for your collection.".into()],
             progress: (0, 0),
+            system_progress: (0, 0, None),
             preview: None,
             preview_name: String::new(),
             tab: 0,
@@ -168,40 +171,123 @@ pub(crate) fn folder(ui: &mut egui::Ui, label: &str, value: &mut String) {
     });
 }
 
+fn settings_for_roots(
+    base: &Settings,
+    roots: &[collection_ui::SystemFolder],
+    output: &Path,
+) -> Vec<Settings> {
+    let mut names = HashSet::new();
+    roots
+        .iter()
+        .map(|root| {
+            let mut settings = base.clone();
+            settings.root = PathBuf::from(&root.path);
+            settings.arcade_mode = root.arcade;
+            if !root.output.trim().is_empty() {
+                settings.output = PathBuf::from(root.output.trim());
+            } else {
+                settings.output = output.to_path_buf();
+            }
+            if root.output.trim().is_empty() && !settings.onion_images && roots.len() > 1 {
+                let name = PathBuf::from(&root.path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let name = if name.is_empty() {
+                    "System".to_owned()
+                } else {
+                    name
+                };
+                let mut output_name = name.clone();
+                let mut suffix = 2;
+                while !names.insert(output_name.clone()) {
+                    output_name = format!("{name}-{suffix}");
+                    suffix += 1;
+                }
+                settings.output.push(output_name);
+            }
+            settings
+        })
+        .collect()
+}
+
+fn effective_settings(settings: &Settings) -> Settings {
+    let mut effective = settings.clone();
+    if effective.turbo_mode {
+        effective.auto_first_result = true;
+        effective.choose_artwork = false;
+    }
+    effective
+}
+
 impl App {
     fn paths_ready(&self) -> bool {
-        !self.root.trim().is_empty()
-            && (self.settings.onion_images || !self.output.trim().is_empty())
+        !self.roots.is_empty()
+            && (self.settings.onion_images
+                || self
+                    .roots
+                    .iter()
+                    .all(|root| !root.output.trim().is_empty() || !self.output.trim().is_empty()))
     }
     fn start(&mut self, local_gamelist: bool) {
-        self.settings.root = PathBuf::from(self.root.trim());
-        self.settings.output = PathBuf::from(self.output.trim());
+        let base_settings = effective_settings(&self.settings);
+        let jobs = settings_for_roots(
+            &base_settings,
+            &self.roots,
+            &PathBuf::from(self.output.trim()),
+        );
+        let job_count = jobs.len();
         self.stop = Arc::new(AtomicBool::new(false));
         let stop = self.stop.clone();
-        let settings = self.settings.clone();
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
         self.progress = (0, 0);
+        self.system_progress = (0, job_count, None);
         self.logs.clear();
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let emit = |event| {
-                    let _ = tx.send(event);
-                };
-                if local_gamelist {
-                    generate_local_gamelist(settings, &stop, emit)
-                } else {
-                    run(settings, &stop, emit)
+                for (index, settings) in jobs.into_iter().enumerate() {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let system = settings
+                        .root
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let _ = tx.send(Event::SystemProgress(
+                        index,
+                        job_count,
+                        Some(system.clone()),
+                    ));
+                    let _ = tx.send(Event::Log(format!(
+                        "Processing system: {system} ({}/{job_count})",
+                        index + 1
+                    )));
+                    let emit = |event| {
+                        let _ = tx.send(event);
+                    };
+                    let result = if local_gamelist {
+                        generate_local_gamelist(settings, &stop, emit)
+                    } else {
+                        run(settings, &stop, emit)
+                    };
+                    match result {
+                        Ok(()) => {
+                            let _ = tx.send(Event::Log(format!("System complete: {system}")));
+                        }
+                        Err(error) => {
+                            let _ =
+                                tx.send(Event::Log(format!("System failed: {system}: {error}")));
+                        }
+                    }
+                    let _ = tx.send(Event::SystemProgress(index + 1, job_count, None));
                 }
             }));
-            match outcome {
-                Ok(Err(e)) => {
-                    let _ = tx.send(Event::Log(e.to_string()));
-                }
-                Err(_) => {
-                    let _ = tx.send(Event::Log("Unexpected processing error".into()));
-                }
-                _ => {}
+            if outcome.is_err() {
+                let _ = tx.send(Event::Log("Unexpected processing error".into()));
             }
             let _ = tx.send(Event::Finished);
         });
@@ -221,6 +307,9 @@ impl App {
                     }
                 }
                 Event::Progress(a, b) => self.progress = (a, b),
+                Event::SystemProgress(done, total, current) => {
+                    self.system_progress = (done, total, current)
+                }
                 Event::Finished => {
                     self.receiver = None;
                     self.review = None;
@@ -382,28 +471,47 @@ impl App {
             .frame(egui::Frame::new().fill(PANEL).inner_margin(16))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    let (systems_done, systems_total, current_system) = &self.system_progress;
+                    let system_fraction = if *systems_total > 0 {
+                        *systems_done as f32 / *systems_total as f32
+                    } else {
+                        0.0
+                    };
+                    let system_text = current_system.as_ref().map_or_else(
+                        || format!("{systems_done} / {systems_total} systems complete"),
+                        |name| format!("System {} / {systems_total}: {name}", systems_done + 1),
+                    );
                     let (done, total) = self.progress;
-                    ui.add(
-                        egui::ProgressBar::new(if total > 0 {
-                            done as f32 / total as f32
-                        } else {
-                            0.0
-                        })
-                        .desired_width(260.0)
-                        .fill(BLUE)
-                        .text(format!("{done} / {total} ROMs")),
-                    );
-                    muted(
-                        ui,
-                        if self.review.is_some() {
-                            "Waiting for your choice"
-                        } else if busy {
-                            "Processing…"
-                        } else {
-                            "Ready"
-                        },
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.vertical(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(system_fraction)
+                                .desired_width(260.0)
+                                .fill(BLUE)
+                                .text(system_text),
+                        );
+                        ui.add(
+                            egui::ProgressBar::new(if total > 0 {
+                                done as f32 / total as f32
+                            } else {
+                                0.0
+                            })
+                            .desired_width(260.0)
+                            .fill(BLUE)
+                            .text(format!("{done} / {total} ROMs")),
+                        );
+                    });
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        muted(
+                            ui,
+                            if self.review.is_some() {
+                                "Waiting for your choice"
+                            } else if busy {
+                                "Processing…"
+                            } else {
+                                "Ready"
+                            },
+                        );
                         if busy {
                             if ui.button("Cancel").clicked() {
                                 self.stop.store(true, Ordering::Relaxed);
@@ -417,7 +525,9 @@ impl App {
                                 )
                                 .fill(BLUE),
                             )
-                            .on_hover_text("Selecione as pastas e informe a chave em Connection")
+                            .on_hover_text(
+                                "Select the system folders and enter your key on Connection.",
+                            )
                             .clicked()
                         {
                             self.start(false);
@@ -562,7 +672,7 @@ impl App {
                         0 => collection_ui::draw(
                             ui,
                             &mut self.settings,
-                            &mut self.root,
+                            &mut self.roots,
                             &mut self.output,
                         ),
                         1 => artwork_ui::settings_panel(ui, &mut self.settings),
@@ -633,6 +743,65 @@ fn app_icon() -> egui::IconData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn multiple_systems_get_separate_output_folders() {
+        let settings = Settings::default();
+        let roots = vec![
+            collection_ui::SystemFolder {
+                path: "/roms/GBA".into(),
+                output: String::new(),
+                arcade: false,
+            },
+            collection_ui::SystemFolder {
+                path: "/backup/GBA".into(),
+                output: String::new(),
+                arcade: true,
+            },
+        ];
+        let jobs = settings_for_roots(&settings, &roots, Path::new("/artwork"));
+
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].root, PathBuf::from("/roms/GBA"));
+        assert_eq!(jobs[0].output, PathBuf::from("/artwork/GBA"));
+        assert!(!jobs[0].arcade_mode);
+        assert_eq!(jobs[1].root, PathBuf::from("/backup/GBA"));
+        assert_eq!(jobs[1].output, PathBuf::from("/artwork/GBA-2"));
+        assert!(jobs[1].arcade_mode);
+    }
+
+    #[test]
+    fn turbo_uses_automatic_game_and_top_artwork_selection() {
+        let settings = Settings {
+            turbo_mode: true,
+            auto_first_result: false,
+            choose_artwork: true,
+            concurrency: 6,
+            ..Settings::default()
+        };
+
+        let effective = effective_settings(&settings);
+
+        assert!(effective.auto_first_result);
+        assert!(!effective.choose_artwork);
+        assert_eq!(effective.concurrency, 6);
+        assert!(settings.choose_artwork);
+    }
+
+    #[test]
+    fn system_output_overrides_shared_output_base() {
+        let settings = Settings::default();
+        let roots = vec![collection_ui::SystemFolder {
+            path: "/roms/GBA".into(),
+            output: "/artwork/custom-gba".into(),
+            arcade: false,
+        }];
+        let jobs = settings_for_roots(&settings, &roots, Path::new("/artwork/shared"));
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].output, PathBuf::from("/artwork/custom-gba"));
+    }
+
     #[test]
     fn all_pages_render_with_dark_theme() {
         let ctx = egui::Context::default();

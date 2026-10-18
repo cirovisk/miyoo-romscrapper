@@ -20,6 +20,7 @@ use std::{
 pub enum Event {
     Log(String),
     Progress(usize, usize),
+    SystemProgress(usize, usize, Option<String>),
     Preview(PathBuf),
     Finished,
     Review {
@@ -71,14 +72,31 @@ pub fn resolve(
     stop: &AtomicBool,
     emit: &impl Fn(Event),
 ) -> Result<Option<Resolved>> {
-    let plain_title = title(path)?;
-    let mut query = plain_title.clone();
+    let mut on_decided = || {};
+    resolve_with_initial_search(provider, path, options, None, &mut on_decided, stop, emit)
+}
+
+pub fn resolve_with_initial_search(
+    provider: &Provider,
+    path: &Path,
+    options: ResolveOptions,
+    mut initial_search: Option<std::result::Result<Vec<Candidate>, String>>,
+    on_decided: &mut impl FnMut(),
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+) -> Result<Option<Resolved>> {
     let mut arcade_mode = options.arcade_mode.load(Ordering::Relaxed);
+    let mut query = initial_search_query(path, options.arcade_root.as_deref(), arcade_mode)?;
     loop {
-        let candidates = provider.search(&query, stop)?;
+        let candidates = match initial_search.take() {
+            Some(Ok(candidates)) => candidates,
+            Some(Err(error)) => return Err(anyhow::anyhow!(error)),
+            None => provider.search(&query, stop)?,
+        };
         if options.auto_first_result
             && let Some(candidate) = candidates.first()
         {
+            on_decided();
             return choose_game(
                 provider,
                 path,
@@ -101,6 +119,7 @@ pub fn resolve(
             cancelled(stop)?;
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(ReviewAction::Select(candidate)) if candidates.contains(&candidate) => {
+                    on_decided();
                     return choose_game(
                         provider,
                         path,
@@ -112,8 +131,14 @@ pub fn resolve(
                     );
                 }
                 Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
-                Ok(ReviewAction::Skip) => return Ok(None),
-                Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
+                Ok(ReviewAction::Skip) => {
+                    on_decided();
+                    return Ok(None);
+                }
+                Ok(ReviewAction::LocalImage(path)) => {
+                    on_decided();
+                    return Ok(Some(Resolved::LocalImage(path)));
+                }
                 Ok(ReviewAction::SelectArtwork(_)) => {
                     bail!("Choose a game before choosing artwork")
                 }
@@ -124,26 +149,32 @@ pub fn resolve(
                 Ok(ReviewAction::SetArcade(enabled)) => {
                     arcade_mode = enabled;
                     options.arcade_mode.store(enabled, Ordering::Relaxed);
-                    query = if enabled {
-                        options
-                            .arcade_root
-                            .as_deref()
-                            .and_then(|root| arcade::title(root, path).ok().flatten())
-                            .unwrap_or_else(|| {
-                                path.file_stem()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned()
-                            })
-                    } else {
-                        plain_title.clone()
-                    };
+                    query = initial_search_query(path, options.arcade_root.as_deref(), enabled)?;
                     break;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => bail!("Review closed"),
             }
         }
+    }
+}
+
+pub fn initial_search_query(
+    path: &Path,
+    arcade_root: Option<&Path>,
+    arcade_mode: bool,
+) -> Result<String> {
+    if arcade_mode {
+        Ok(arcade_root
+            .and_then(|root| arcade::title(root, path).ok().flatten())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            }))
+    } else {
+        title(path)
     }
 }
 
