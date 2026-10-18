@@ -51,6 +51,7 @@ pub enum ReviewAction {
     SetArcade(bool),
     LocalImage(PathBuf),
     SelectArtwork(Media),
+    BackToGame,
     Skip,
 }
 
@@ -59,6 +60,11 @@ pub enum Resolved {
     Game(Candidate, Option<Media>),
     LocalImage(PathBuf),
     NoMatch,
+}
+
+enum GameResolution {
+    Resolved(Option<Resolved>),
+    BackToGame,
 }
 
 #[derive(Clone)]
@@ -94,24 +100,37 @@ pub fn resolve_with_initial_search(
 ) -> Result<Option<Resolved>> {
     let mut arcade_mode = options.arcade_mode.load(Ordering::Relaxed);
     let mut query = initial_search_query(path, options.arcade_root.as_deref(), arcade_mode)?;
+    let mut pending_candidates = None;
+    let mut force_manual_review = false;
     loop {
-        let candidates = match initial_search.take() {
-            Some(Ok(candidates)) => candidates,
-            Some(Err(error)) => return Err(anyhow::anyhow!(error)),
-            None => provider.search(&query, stop)?,
+        let candidates = match pending_candidates.take() {
+            Some(candidates) => candidates,
+            None => match initial_search.take() {
+                Some(Ok(candidates)) => candidates,
+                Some(Err(error)) => return Err(anyhow::anyhow!(error)),
+                None => provider.search(&query, stop)?,
+            },
         };
-        if options.auto_first_result {
+        if options.auto_first_result && !force_manual_review {
             if let Some(candidate) = exact_match(&query, &candidates) {
                 on_decided();
-                return choose_game(
+                match choose_game(
                     provider,
                     path,
                     candidate.clone(),
-                    options,
+                    options.clone(),
                     arcade_mode,
                     stop,
                     emit,
-                );
+                ) {
+                    Ok(GameResolution::Resolved(result)) => return Ok(result),
+                    Ok(GameResolution::BackToGame) => {
+                        pending_candidates = Some(candidates);
+                        force_manual_review = true;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             on_decided();
             return Ok(Some(Resolved::NoMatch));
@@ -124,20 +143,30 @@ pub fn resolve_with_initial_search(
             arcade: arcade_mode,
             answer: tx,
         });
+        let mut reopen_game_review = false;
         loop {
             cancelled(stop)?;
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(ReviewAction::Select(candidate)) if candidates.contains(&candidate) => {
                     on_decided();
-                    return choose_game(
+                    match choose_game(
                         provider,
                         path,
                         candidate,
-                        options,
+                        options.clone(),
                         arcade_mode,
                         stop,
                         emit,
-                    );
+                    ) {
+                        Ok(GameResolution::Resolved(result)) => return Ok(result),
+                        Ok(GameResolution::BackToGame) => {
+                            pending_candidates = Some(candidates.clone());
+                            force_manual_review = true;
+                            reopen_game_review = true;
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
                 Ok(ReviewAction::Skip) => {
@@ -155,6 +184,9 @@ pub fn resolve_with_initial_search(
                 Ok(ReviewAction::SelectArtwork(_)) => {
                     bail!("Choose a game before choosing artwork")
                 }
+                Ok(ReviewAction::BackToGame) => {
+                    bail!("Choose artwork before returning to game selection")
+                }
                 Ok(ReviewAction::Search(search)) => {
                     query = search;
                     break;
@@ -168,6 +200,9 @@ pub fn resolve_with_initial_search(
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => bail!("Review closed"),
             }
+        }
+        if reopen_game_review {
+            continue;
         }
     }
 }
@@ -199,7 +234,7 @@ fn choose_game(
     arcade_mode: bool,
     stop: &AtomicBool,
     emit: &impl Fn(Event),
-) -> Result<Option<Resolved>> {
+) -> Result<GameResolution> {
     if arcade_mode
         && let Some(root) = options.arcade_root.as_deref()
         && let Err(error) = arcade::remember(root, path, &candidate.name)
@@ -218,13 +253,16 @@ fn resolve_artwork(
     options: ResolveOptions,
     stop: &AtomicBool,
     emit: &impl Fn(Event),
-) -> Result<Option<Resolved>> {
+) -> Result<GameResolution> {
     if !options.choose_artwork {
-        return Ok(Some(Resolved::Game(game, None)));
+        return Ok(GameResolution::Resolved(Some(Resolved::Game(game, None))));
     }
     let mut media = match provider.artwork_options(game.id, options.kind, stop) {
         Ok(media) => media,
-        Err(error) => return request_local_image(rom, &error.to_string(), stop, emit),
+        Err(error) => {
+            return request_local_image(rom, &error.to_string(), stop, emit)
+                .map(GameResolution::Resolved);
+        }
     };
     media.sort_by_key(|m| {
         (
@@ -258,12 +296,16 @@ fn resolve_artwork(
         cancelled(stop)?;
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(ReviewAction::SelectArtwork(selected)) if media.contains(&selected) => {
-                return Ok(Some(Resolved::Game(game, Some(selected))));
+                return Ok(GameResolution::Resolved(Some(Resolved::Game(
+                    game,
+                    Some(selected),
+                ))));
             }
             Ok(ReviewAction::SelectArtwork(_)) => {
                 bail!("Artwork selection is not among the results")
             }
-            Ok(ReviewAction::Skip) => return Ok(None),
+            Ok(ReviewAction::BackToGame) => return Ok(GameResolution::BackToGame),
+            Ok(ReviewAction::Skip) => return Ok(GameResolution::Resolved(None)),
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => bail!("Artwork review closed"),
             _ => bail!("Invalid artwork review action"),

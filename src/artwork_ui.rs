@@ -221,9 +221,14 @@ pub(crate) fn review_window(ctx: &egui::Context, review: &mut Option<ArtworkChoi
                                 }
                             });
                     });
-                if ui.button("Skip this ROM").clicked() {
-                    action = Some(ReviewAction::Skip);
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Back to choose game").clicked() {
+                        action = Some(ReviewAction::BackToGame);
+                    }
+                    if ui.button("Skip this ROM").clicked() {
+                        action = Some(ReviewAction::Skip);
+                    }
+                });
             });
     }
     if let Some(action) = action

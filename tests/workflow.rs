@@ -586,6 +586,81 @@ fn unmatched_game_supports_research_and_cancellation() {
 }
 
 #[test]
+fn artwork_gallery_can_return_to_game_selection_without_researching() {
+    let (base, handle) = server(|base| {
+        let media = || {
+            json(serde_json::json!([{
+                "url":format!("{base}cdn/full.png"),
+                "thumb":format!("{base}cdn/thumb.png"),
+                "width":250,
+                "height":360,
+                "score":1
+            }]))
+        };
+        vec![
+            json(serde_json::json!([
+                {"id":1,"name":"Game"},
+                {"id":2,"name":"Game Alternative"}
+            ])),
+            media(),
+            (200, b"not an image".to_vec()),
+            media(),
+            (200, b"not an image".to_vec()),
+        ]
+    });
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let review_count = std::sync::atomic::AtomicUsize::new(0);
+    let artwork_game = std::sync::atomic::AtomicUsize::new(0);
+    let selected = resolve(
+        &provider,
+        Path::new("Game.nes"),
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: true,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
+        },
+        &AtomicBool::new(false),
+        &|event| match event {
+            Event::Review {
+                candidates, answer, ..
+            } => {
+                let attempt = review_count.fetch_add(1, Ordering::Relaxed);
+                let candidate = if attempt == 0 {
+                    candidates[0].clone()
+                } else {
+                    candidates[1].clone()
+                };
+                answer.send(ReviewAction::Select(candidate)).unwrap();
+            }
+            Event::ArtworkReview { game, answer, .. } => {
+                artwork_game.store(game.id as usize, Ordering::Relaxed);
+                let action = if game.id == 1 {
+                    ReviewAction::BackToGame
+                } else {
+                    ReviewAction::Skip
+                };
+                answer.send(action).unwrap();
+            }
+            _ => {}
+        },
+    )
+    .unwrap();
+
+    assert!(selected.is_none());
+    assert_eq!(review_count.load(Ordering::Relaxed), 2);
+    assert_eq!(artwork_game.load(Ordering::Relaxed), 2);
+    let requests = handle.join().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert!(requests[0].contains("/search/autocomplete/Game"));
+    assert!(requests[1].contains("/grids/game/1"));
+    assert!(requests[3].contains("/grids/game/2"));
+}
+
+#[test]
 fn failures_do_not_leak_keys_and_unsuccessful_json_is_rejected() {
     for status in [401, 403, 429, 503] {
         let (base, handle) = server(|_| vec![(status, b"TEST_SECRET".to_vec())]);
