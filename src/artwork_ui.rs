@@ -20,17 +20,13 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
     muted(ui, "Choose artwork that fits your library.");
     ui.add_space(8.0);
     card(ui, |ui| {
-        ui.add_sized(
-            [ui.available_width(), 36.0],
-            egui::Checkbox::new(&mut settings.turbo_mode, "Turbo mode"),
-        )
+        ui.checkbox(&mut settings.turbo_mode, "Turbo mode")
             .on_hover_text("Suggested for large collections. Automatically uses the first game result and the top-ranked image, skips confirmation and gallery previews, and processes more ROMs in parallel.");
         ui.horizontal(|ui| {
-            ui.label("Concurrent tasks");
             ui.add(
-                egui::DragValue::new(&mut settings.concurrency)
-                    .range(1..=MAX_CONCURRENCY)
-                    .speed(1),
+                egui::Slider::new(&mut settings.concurrency, 1..=MAX_CONCURRENCY)
+                    .text("Concurrent workers")
+                    .show_value(true),
             )
             .on_hover_text("Sets the maximum number of concurrent workers for each stage: game searches and artwork downloads. Higher values may use more bandwidth or encounter API throttling.");
         });
