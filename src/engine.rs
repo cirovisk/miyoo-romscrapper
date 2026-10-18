@@ -26,6 +26,7 @@ pub struct Settings {
     pub overwrite: bool,
     pub backup_existing: bool,
     pub auto_first_result: bool,
+    pub arcade_mode: bool,
     pub choose_artwork: bool,
     pub only_missing: bool,
     pub gamelist: bool,
@@ -46,6 +47,7 @@ impl Default for Settings {
             overwrite: false,
             backup_existing: true,
             auto_first_result: true,
+            arcade_mode: false,
             choose_artwork: false,
             only_missing: false,
             gamelist: true,
@@ -232,7 +234,7 @@ fn run_with_provider_inner(
     let mut skipped = 0;
     let mut failed = 0;
     let mut names = HashMap::new();
-    let arcade_mode = Arc::new(AtomicBool::new(false));
+    let arcade_mode = Arc::new(AtomicBool::new(settings.arcade_mode));
     for (index, path) in paths.iter().enumerate() {
         cancelled(stop)?;
         // Preserve the relative directories AND extension to prevent same-stem collisions.

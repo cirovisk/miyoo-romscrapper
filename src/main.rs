@@ -603,11 +603,13 @@ impl Drop for App {
 }
 fn main() -> eframe::Result {
     eframe::run_native(
-        "ROM Art — SteamGridDB",
+        "Miyoo ROMScrapper",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1180.0, 820.0])
-                .with_min_inner_size([1080.0, 740.0]),
+                .with_min_inner_size([1080.0, 740.0])
+                .with_app_id("miyoo-romscrapper")
+                .with_icon(app_icon()),
             ..Default::default()
         },
         Box::new(|cc| {
@@ -615,6 +617,17 @@ fn main() -> eframe::Result {
             Ok(Box::<App>::default())
         }),
     )
+}
+
+fn app_icon() -> egui::IconData {
+    let image = image::load_from_memory(include_bytes!("../assets/miyoo-romscrapper.png"))
+        .expect("embedded application icon should be valid")
+        .to_rgba8();
+    egui::IconData {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    }
 }
 
 #[cfg(test)]
@@ -641,5 +654,12 @@ mod tests {
         }
         assert!(ctx.style().visuals.dark_mode);
         assert_eq!(ctx.style().visuals.panel_fill, PANEL);
+    }
+
+    #[test]
+    fn embedded_window_icon_has_square_rgba_pixels() {
+        let icon = app_icon();
+        assert_eq!(icon.width, icon.height);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
     }
 }

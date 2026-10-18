@@ -1,3 +1,4 @@
 /target
+/dist
 /.rom-art-cache
 *.local.json

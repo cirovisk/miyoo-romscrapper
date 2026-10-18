@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Miyoo ROMScrapper
+Comment=Download artwork and create gamelists for Miyoo and OnionOS
+Exec=miyoo-romscrapper %U
+Icon=miyoo-romscrapper
+Categories=Game;
+Terminal=false
+StartupNotify=true
+StartupWMClass=miyoo-romscrapper

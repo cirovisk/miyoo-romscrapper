@@ -32,6 +32,11 @@ pub(crate) fn draw(
     });
     ui.add_space(4.0);
     crate::card(ui, |ui| {
+        ui.checkbox(&mut settings.arcade_mode, "Arcade ROMs (MAME / FBNeo)")
+            .on_hover_text("Enable this for short arcade filenames. The app checks DAT/XML catalogs in the ROM folder, existing gamelists, then saved aliases. Manual matches are remembered. Turn off automatic first-result selection if you want to review each game.");
+    });
+    ui.add_space(4.0);
+    crate::card(ui, |ui| {
         ui.label(RichText::new("Title matching").strong());
         crate::muted(
             ui,

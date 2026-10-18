@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux AppImage (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: debian:bookworm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+            appimagetool_arch: x86_64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            appimagetool_arch: aarch64
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends bash build-essential ca-certificates curl file git libasound2-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev pkg-config
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Download AppImage tools
+        run: |
+          curl -fL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimagetool_arch }}.AppImage" -o /tmp/appimagetool
+          curl -fL "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-${{ matrix.appimagetool_arch }}" -o /tmp/appimage-runtime
+          chmod +x /tmp/appimagetool
+      - name: Build AppImage
+        env:
+          ROM_SCRAPPER_ARCH: ${{ matrix.arch }}
+          APPIMAGE_TOOL_BIN: /tmp/appimagetool
+          APPIMAGE_RUNTIME_FILE: /tmp/appimage-runtime
+        run: bash scripts/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Miyoo-ROMScrapper-${{ matrix.arch }}.AppImage
+          path: dist/Miyoo-ROMScrapper-${{ matrix.arch }}.AppImage
+
+  windows:
+    name: Windows executable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build executable
+        run: cargo build --release --locked
+      - name: Name release executable
+        run: Move-Item target/release/rom-art-rs.exe target/release/Miyoo-ROMScrapper-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Miyoo-ROMScrapper-windows-x64
+          path: target/release/Miyoo-ROMScrapper-windows-x64.exe
+
+  publish:
+    name: Publish GitHub release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: Miyoo-ROMScrapper-*
+          merge-multiple: true
+      - name: Create release and attach binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/Miyoo-ROMScrapper-x86_64.AppImage
+            dist/Miyoo-ROMScrapper-aarch64.AppImage
+            dist/Miyoo-ROMScrapper-windows-x64.exe

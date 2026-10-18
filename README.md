@@ -14,11 +14,11 @@ The app uses `eframe/egui` and the desktop portal file picker through `rfd`. It 
 
 ## Getting started
 
-1. In **Collection**, select a single system's ROM folder and an artwork output folder.
+1. In **Collection**, select a single system's ROM folder and an artwork output folder. For arcade systems, enable **Arcade ROMs (MAME / FBNeo)** before starting.
 2. In **Connection**, paste your personal [SteamGridDB API key](https://www.steamgriddb.com/profile/preferences/api). You can also provide it using `STEAMGRIDDB_API_KEY`. By default the key stays in memory only. To keep it between sessions, enable **Remember this key securely** and click **Save key securely**; it is stored in the system credential wallet (KWallet on KDE), not in app settings, cache or logs.
 3. In **Artwork**, choose one of SteamGridDB's artwork types: covers, banners/heroes, logos or icons. Choose output dimensions and naming options.
 4. In **Gamelist**, choose the export format and whether to generate lists after downloading.
-5. Click **Download artwork**. By default, the first SteamGridDB game result is selected; turn that option off to review results. In the review dialog, mark **Arcade ROM (MAME / FBNeo)** for short arcade filenames. The app checks `.dat` and `.xml` catalogs beside the ROMs, then existing `gamelist.xml` / `miyoogamelist.xml` names, then saved aliases. If none match, edit the search or select a result manually; the selected title is saved in `.rom-art-arcade-aliases.json` by ROM-relative path. Optionally enable **Choose artwork from a gallery** to preview and select an image after matching a game. The review dialog also lets you skip or choose a local image.
+5. Click **Download artwork**. By default, the first SteamGridDB game result is selected; turn that option off to review results. The review dialog also has a per-ROM **Arcade ROM (MAME / FBNeo)** override. Arcade mode checks `.dat` and `.xml` catalogs beside the ROMs, then existing `gamelist.xml` / `miyoogamelist.xml` names, then saved aliases. If none match, edit the search or select a result manually; the selected title is saved in `.rom-art-arcade-aliases.json` by ROM-relative path. Optionally enable **Choose artwork from a gallery** to preview and select an image after matching a game. The review dialog also lets you skip or choose a local image.
 
 On **Collection**, enable **Only process ROMs without artwork in the destination** to skip ROMs whose target PNG already exists. When game list generation is enabled, exported lists still include the full ROM folder.
 
@@ -70,7 +70,7 @@ Writes are atomic per file. Malformed XML and duplicate game paths are rejected.
 
 ## Matching and limits
 
-SteamGridDB searches use filenames with recognized trailing region, language, revision and disc tags removed. Unknown hack tags and subtitles are retained. The first search result is selected by default; disable automatic selection to review each game's results and mark arcade ROMs. Arcade catalogs can use MAME XML (`machine name` / `description`) and DAT (`game` / `machine` name / `description`) formats and must be placed directly in the selected system folder. ZIP archives are matched by their external name without extraction or hash calculation. A local image can be selected if the game or its chosen artwork type is missing from SteamGridDB. The optional artwork gallery shows available images with a small preview, dimensions and score; previews larger than 4 MiB are omitted, but those images can still be selected.
+SteamGridDB searches use filenames with recognized trailing region, language, revision and disc tags removed. Unknown hack tags and subtitles are retained. The first search result is selected by default; disable automatic selection to review each game's results. Arcade catalogs can use MAME XML (`machine name` / `description`) and DAT (`game` / `machine` name / `description`) formats and must be placed directly in the selected system folder. ZIP archives are matched by their external name without extraction or hash calculation. A local image can be selected if the game or its chosen artwork type is missing from SteamGridDB. The optional artwork gallery shows available images with a small preview, dimensions and score; previews larger than 4 MiB are omitted, but those images can still be selected.
 
 Artwork selection requests static PNG/JPEG/WebP images and prefers matching orientation, then community score, from the first page of results when the gallery is off. Local images are converted to PNG and fit to the chosen dimensions without cropping. Not all games, hacks or translations have matching artwork in the catalog.
 
@@ -86,6 +86,22 @@ cargo build --locked
 ```
 
 Tests cover title matching, manual review, API authentication isolation, cache reuse, PNG output, OnionOS naming, filename collisions, both XML formats, placeholders, metadata preservation, backups and idempotent reruns. HTTP tests use a local mock server. Real SteamGridDB account authentication, the KDE portal picker and physical-device behavior have not been verified.
+
+## Releases and manual builds
+
+GitHub releases provide AppImages for Linux `x86_64` and `aarch64`, plus a standalone Windows `.exe`. The Linux AppImages are built on Debian 12 (glibc 2.36) to keep the minimum glibc requirement at 2.36. AppImages include the application and its Rust dependencies; a compatible graphics driver and the desktop's Wayland/X11 libraries are still provided by the system.
+
+To compile the application yourself, install Rust stable and the platform build dependencies, then run:
+
+```sh
+cargo build --release --locked
+```
+
+The executable is written to `target/release/rom-art-rs` on Linux and `target/release/rom-art-rs.exe` on Windows. Linux builds need a C compiler, `pkg-config`, and the X11/Wayland development packages (on Debian: `build-essential pkg-config libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libgl1-mesa-dev libasound2-dev`). Windows builds need the Rust MSVC toolchain and Visual Studio Build Tools with the C++ build tools workload.
+
+To package a Linux AppImage manually, use a native machine of the target architecture, preferably Debian 12, and download the matching `appimagetool` and `runtime` from the [official AppImageKit](https://github.com/AppImage/AppImageKit/releases) and [type2-runtime](https://github.com/AppImage/type2-runtime/releases) releases. Set `ROM_SCRAPPER_ARCH`, `APPIMAGE_TOOL_BIN`, and `APPIMAGE_RUNTIME_FILE` to `x86_64` or `aarch64` and their downloaded file paths, then run `bash scripts/build-appimage.sh`. The script builds the release binary and writes the AppImage to `dist/`.
+
+The GitHub release workflow runs when a `v*` tag is pushed. It builds each AppImage on Debian 12 and the Windows executable on a Windows runner, then attaches those three files to the GitHub release. The source remains available for independent builds using the commands above.
 
 ## References
 
