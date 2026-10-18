@@ -1,6 +1,6 @@
 # Miyoo ROMScrapper
 
-Dark-mode desktop app that downloads ROM artwork from [SteamGridDB](https://www.steamgriddb.com/) and creates game lists for OnionOS and EmulationStation.
+Desktop app that downloads ROM artwork from [SteamGridDB](https://www.steamgriddb.com/) and creates game lists for OnionOS and EmulationStation.
 
 ![Application interface](docs/interface-breeze-dark.png)
 
