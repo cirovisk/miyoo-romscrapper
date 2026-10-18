@@ -1,7 +1,8 @@
 use rom_art_rs::{
     engine::{Settings, generate_local_gamelist, run_with_provider},
     provider::{
-        ArtworkType, Candidate, Credentials, Provider, ServiceStopped, choose_media, exact_match,
+        ArtworkType, Candidate, Credentials, Media, Provider, ServiceStopped, choose_media,
+        exact_match,
     },
     worker::{Event, ResolveOptions, Resolved, ReviewAction, resolve},
 };
@@ -216,6 +217,74 @@ fn artwork_download_can_skip_automatic_gamelist_export() {
     assert!(!root.path().join("gamelist.xml").exists());
     assert!(!root.path().join("miyoogamelist.xml").exists());
     assert_eq!(handle.join().unwrap().len(), 3);
+}
+
+#[test]
+fn artwork_gallery_loads_thumbnail_urls_and_keeps_full_image_selection() {
+    let image_bytes = {
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(20, 10)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        png.into_inner()
+    };
+    let image_bytes_again = image_bytes.clone();
+    let (base, handle) = server(|base| {
+        vec![
+            json(serde_json::json!([{"id":7,"name":"Game"}])),
+            json(serde_json::json!([
+                {"url":format!("{base}cdn/full-1.png"),"thumb":format!("{base}cdn/thumb-1.png"),"width":20,"height":10,"score":10},
+                {"url":format!("{base}cdn/full-2.png"),"thumb":format!("{base}cdn/thumb-2.png"),"width":20,"height":10,"score":5}
+            ])),
+            (200, image_bytes),
+            (200, image_bytes_again),
+        ]
+    });
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let selected = resolve(
+        &provider,
+        Path::new("Game.nes"),
+        ResolveOptions {
+            auto_first_result: true,
+            choose_artwork: true,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
+        },
+        &AtomicBool::new(false),
+        &|event| {
+            if let Event::ArtworkReview { media, answer, .. } = event {
+                answer
+                    .send(ReviewAction::SelectArtwork(media[1].clone()))
+                    .unwrap();
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        selected,
+        Some(Resolved::Game(_, Some(Media { url, .. }))) if url == format!("{base}cdn/full-2.png")
+    ));
+    let requests = handle.join().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("/cdn/thumb-1.png"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("/cdn/thumb-2.png"))
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.contains("/cdn/full-"))
+    );
 }
 
 #[test]

@@ -20,6 +20,8 @@ pub struct Candidate {
 pub struct Media {
     pub url: String,
     #[serde(default)]
+    pub thumb: Option<String>,
+    #[serde(default)]
     pub width: u32,
     #[serde(default)]
     pub height: u32,

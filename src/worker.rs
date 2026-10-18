@@ -188,16 +188,20 @@ fn resolve_artwork(
             std::cmp::Reverse(m.score),
         )
     });
-    let previews = media
-        .iter()
-        .map(|item| {
-            let bytes = provider.get(&item.url, 4 * 1024 * 1024, stop).ok()?;
-            let thumbnail = decode(&bytes).ok()?.thumbnail(150, 200);
-            let mut output = Cursor::new(Vec::new());
-            thumbnail.write_to(&mut output, ImageFormat::Jpeg).ok()?;
-            Some(output.into_inner())
-        })
-        .collect();
+    let previews = std::thread::scope(|scope| {
+        media
+            .chunks(4)
+            .flat_map(|chunk| {
+                chunk
+                    .iter()
+                    .map(|item| scope.spawn(move || artwork_preview(provider, item, stop)))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .map(|thread| thread.join().ok().flatten())
+            })
+            .collect::<Vec<_>>()
+    });
+    cancelled(stop)?;
     let (tx, rx) = mpsc::channel();
     emit(Event::ArtworkReview {
         rom: rom.to_path_buf(),
@@ -221,6 +225,15 @@ fn resolve_artwork(
             _ => bail!("Invalid artwork review action"),
         }
     }
+}
+
+fn artwork_preview(provider: &Provider, media: &Media, stop: &AtomicBool) -> Option<Vec<u8>> {
+    let url = media.thumb.as_deref().unwrap_or(&media.url);
+    let bytes = provider.get(url, 4 * 1024 * 1024, stop).ok()?;
+    let thumbnail = decode(&bytes).ok()?.thumbnail(150, 200);
+    let mut output = Cursor::new(Vec::new());
+    thumbnail.write_to(&mut output, ImageFormat::Jpeg).ok()?;
+    Some(output.into_inner())
 }
 
 pub fn request_local_image(
