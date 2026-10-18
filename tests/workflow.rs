@@ -10,7 +10,10 @@ use std::{
     io::{Cursor, Read, Write},
     net::TcpListener,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -103,7 +106,7 @@ fn chooses_orientation_then_score_and_handles_empty() {
 }
 
 #[test]
-fn full_download_auth_cache_gamelist_and_preservation() {
+fn full_download_removes_temporary_cache_and_preserves_outputs() {
     let root = tempfile::tempdir().unwrap();
     let output = root.path().join("Imgs");
     fs::create_dir(&output).unwrap();
@@ -116,6 +119,8 @@ fn full_download_auth_cache_gamelist_and_preservation() {
     image::DynamicImage::new_rgb8(20, 10)
         .write_to(&mut png, image::ImageFormat::Png)
         .unwrap();
+    let image_bytes = png.into_inner();
+    let image_bytes_again = image_bytes.clone();
     let (base, handle) = server(|base| {
         let search = json(serde_json::json!([{"id":7,"name":"A & B"}]));
         let media = json(
@@ -124,9 +129,10 @@ fn full_download_auth_cache_gamelist_and_preservation() {
         vec![
             search.clone(),
             media.clone(),
-            (200, png.into_inner()),
+            (200, image_bytes),
             search,
             media,
+            (200, image_bytes_again),
         ]
     });
     let mut settings = Settings {
@@ -137,6 +143,7 @@ fn full_download_auth_cache_gamelist_and_preservation() {
     };
     let provider = Provider::with_base(credentials(), &base).unwrap();
     run_with_provider(settings.clone(), &provider, &AtomicBool::new(false), |_| {}).unwrap();
+    assert!(!settings.output.join(".rom-art-cache").exists());
     let path = settings.output.join("A & B (USA).zip.png");
     assert_eq!(image::image_dimensions(&path).unwrap(), (250, 360));
     let first = fs::read(&path).unwrap();
@@ -151,11 +158,12 @@ fn full_download_auth_cache_gamelist_and_preservation() {
             .unwrap(),
         "./Imgs/A & B (USA).zip.png"
     );
-    // Overwrite uses the media cache: API metadata still fetched, PNG is not fetched again.
+    // The temporary image cache is removed after each operation, so the overwritten image is fetched again.
     settings.overwrite = true;
     run_with_provider(settings.clone(), &provider, &AtomicBool::new(false), |_| {}).unwrap();
+    assert!(!settings.output.join(".rom-art-cache").exists());
     let requests = handle.join().unwrap();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     assert!(requests[0].contains("/search/autocomplete/A%20&%20B"));
     assert!(requests[1].contains("/grids/game/7?"));
     assert!(requests[1].contains("types=static"));
@@ -167,6 +175,7 @@ fn full_download_auth_cache_gamelist_and_preservation() {
         );
     }
     assert!(!requests[2].to_lowercase().contains("authorization"));
+    assert!(!requests[5].to_lowercase().contains("authorization"));
     // Server stopped: preserved outputs must not cause network calls.
     settings.overwrite = false;
     run_with_provider(settings, &provider, &AtomicBool::new(false), |_| {}).unwrap();
@@ -226,6 +235,8 @@ fn ambiguous_result_can_be_selected_manually() {
             kind: ArtworkType::Grid,
             width: 250,
             height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
         },
         &AtomicBool::new(false),
         &|event| {
@@ -249,6 +260,66 @@ fn ambiguous_result_can_be_selected_manually() {
 }
 
 #[test]
+fn arcade_mode_researches_catalog_title_and_saves_alias() {
+    let root = tempfile::tempdir().unwrap();
+    let rom = root.path().join("mslug.zip");
+    fs::write(&rom, b"rom").unwrap();
+    fs::write(
+        root.path().join("fbneo.dat"),
+        b"game ( name \"mslug\" description \"Metal Slug\" )",
+    )
+    .unwrap();
+    let (base, handle) = server(|_| {
+        vec![
+            json(serde_json::json!([])),
+            json(serde_json::json!([{"id":7,"name":"Metal Slug"}])),
+        ]
+    });
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let selected = resolve(
+        &provider,
+        &rom,
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: false,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: Some(root.path().to_path_buf()),
+            arcade_mode: Arc::new(AtomicBool::new(false)),
+        },
+        &AtomicBool::new(false),
+        &|event| {
+            if let Event::Review {
+                candidates, answer, ..
+            } = event
+            {
+                if candidates.is_empty() {
+                    let _ = answer.send(ReviewAction::SetArcade(true));
+                } else {
+                    answer
+                        .send(ReviewAction::Select(candidates[0].clone()))
+                        .unwrap();
+                }
+            }
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(
+        selected,
+        Resolved::Game(Candidate { id: 7, .. }, None)
+    ));
+    let requests = handle.join().unwrap();
+    assert!(requests[0].contains("/search/autocomplete/mslug"));
+    assert!(requests[1].contains("/search/autocomplete/Metal%20Slug"));
+    assert_eq!(
+        rom_art_rs::arcade::title(root.path(), &rom).unwrap(),
+        Some("Metal Slug".into())
+    );
+}
+
+#[test]
 fn unmatched_game_supports_research_and_cancellation() {
     let (base, handle) = server(|_| {
         vec![
@@ -266,6 +337,8 @@ fn unmatched_game_supports_research_and_cancellation() {
             kind: ArtworkType::Grid,
             width: 250,
             height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
         },
         &AtomicBool::new(false),
         &|event| {
@@ -304,6 +377,8 @@ fn unmatched_game_supports_research_and_cancellation() {
             kind: ArtworkType::Grid,
             width: 250,
             height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
         },
         &stop,
         &|_| stop.store(true, Ordering::Relaxed),

@@ -1,4 +1,7 @@
 mod artwork_ui;
+mod collection_ui;
+mod connection_ui;
+mod gamelist_ui;
 
 use eframe::egui::{self, Color32, RichText};
 use keyring::Entry;
@@ -45,6 +48,7 @@ struct Review {
     rom: PathBuf,
     query: String,
     candidates: Vec<Candidate>,
+    arcade: bool,
     answer: mpsc::Sender<ReviewAction>,
 }
 struct App {
@@ -134,10 +138,10 @@ fn breeze_dark(ctx: &egui::Context) {
             .insert(egui::TextStyle::Heading, egui::FontId::proportional(25.0));
     });
 }
-fn muted(ui: &mut egui::Ui, text: &str) {
+pub(crate) fn muted(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).color(MUTED));
 }
-fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+pub(crate) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(CARD)
         .corner_radius(7)
@@ -147,7 +151,7 @@ fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
             content(ui);
         });
 }
-fn folder(ui: &mut egui::Ui, label: &str, value: &mut String) {
+pub(crate) fn folder(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.label(RichText::new(label).strong());
     ui.horizontal(|ui| {
         let width = (ui.available_width() - 110.0).max(150.0);
@@ -226,12 +230,14 @@ impl App {
                     rom,
                     query,
                     candidates,
+                    arcade,
                     answer,
                 } => {
                     self.review = Some(Review {
                         rom,
                         query,
                         candidates,
+                        arcade,
                         answer,
                     })
                 }
@@ -288,173 +294,6 @@ impl App {
             }
         }
     }
-    fn collection(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Your collection");
-        muted(ui, "Choose your games folder and where to save artwork.");
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            folder(ui, "ROM folder", &mut self.root);
-            muted(ui, "Subfolders are included.");
-            ui.add_space(4.0);
-            if self.settings.onion_images {
-                ui.label(RichText::new("OnionOS artwork folder").strong());
-                let directory = if self.root.trim().is_empty() {
-                    "<ROM folder>/Imgs".into()
-                } else {
-                    PathBuf::from(self.root.trim())
-                        .join("Imgs")
-                        .display()
-                        .to_string()
-                };
-                muted(ui, &directory);
-            } else {
-                folder(ui, "Save artwork to", &mut self.output);
-            }
-        });
-        ui.add_space(4.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("Title matching").strong());
-            muted(
-                ui,
-                "Region and revision tags are removed from searches. You can choose the game when results are ambiguous.",
-            );
-            egui::CollapsingHeader::new("File types").show(ui, |ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.settings.extensions).desired_width(f32::INFINITY));
-                muted(ui, "Comma-separated extensions. ZIPs use the archive filename without extracting its contents.");
-            });
-            ui.checkbox(
-                &mut self.settings.only_missing,
-                "Only process ROMs without artwork in the destination",
-            );
-        });
-    }
-    fn gamelist(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Game lists");
-        muted(
-            ui,
-            "Export game names and artwork for EmulationStation or OnionOS.",
-        );
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.checkbox(
-                &mut self.settings.gamelist,
-                "Generate game lists after artwork downloads",
-            );
-            muted(
-                ui,
-                "Turn this off to download images without changing any game list. The local export button below always generates lists when clicked.",
-            );
-            ui.separator();
-            ui.label(RichText::new("List format").strong());
-            egui::ComboBox::from_id_salt("gamelist_format")
-                .selected_text(self.settings.gamelist_format.label())
-                .width(330.0)
-                .show_ui(ui, |ui| {
-                    for format in [
-                        rom_art_rs::gamelist::Format::EmulationStation,
-                        rom_art_rs::gamelist::Format::OnionOS,
-                        rom_art_rs::gamelist::Format::Both,
-                    ] {
-                        ui.selectable_value(
-                            &mut self.settings.gamelist_format,
-                            format,
-                            format.label(),
-                        );
-                    }
-                });
-            if self.settings.gamelist_format != rom_art_rs::gamelist::Format::EmulationStation {
-                muted(
-                    ui,
-                    "OnionOS: compact path, name and image fields. Missing artwork uses a transparent placeholder. Choose both files to retain full metadata in gamelist.xml.",
-                );
-                muted(
-                    ui,
-                    "Select one system folder. OnionOS displays games from subfolders as a flat list. Refresh all ROMs on the Miyoo after exporting.",
-                );
-            }
-            muted(
-                ui,
-                "Select one system folder. Existing entries and custom names are retained.",
-            );
-            ui.checkbox(&mut self.settings.backup_existing, "Back up replaced files");
-            muted(
-                ui,
-                "Applies to artwork and game lists. Each backup has a unique name.",
-            );
-            if ui
-                .add_enabled(
-                    self.paths_ready(),
-                    egui::Button::new("Generate lists locally"),
-                )
-                .clicked()
-            {
-                self.start(true);
-            }
-        });
-    }
-    fn connection(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Connection");
-        muted(
-            ui,
-            "Community artwork from SteamGridDB for your collection.",
-        );
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.label(RichText::new("Personal API key").strong());
-            ui.add(
-                egui::TextEdit::singleline(&mut self.settings.credentials.api_key)
-                    .password(true)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Paste your SteamGridDB API key"),
-            );
-            ui.hyperlink_to(
-                "Get my SteamGridDB key ↗",
-                "https://www.steamgriddb.com/profile/preferences/api",
-            );
-            muted(
-                ui,
-                "Sign in and generate a key in your account preferences. Developer credentials are not required.",
-            );
-            ui.separator();
-            if ui
-                .checkbox(
-                    &mut self.remember_api_key,
-                    "Remember this key securely between sessions",
-                )
-                .changed()
-                && !self.remember_api_key
-            {
-                self.credential_status = match delete_api_key() {
-                    Ok(()) => Some("Saved key removed from the system credential store.".into()),
-                    Err(error) => Some(format!("Could not remove the saved key: {error}")),
-                };
-            }
-            if self.remember_api_key {
-                muted(
-                    ui,
-                    "Save stores the key in your desktop credential wallet, not in app settings.",
-                );
-                if ui
-                    .add_enabled(
-                        !self.settings.credentials.api_key.trim().is_empty(),
-                        egui::Button::new("Save key securely"),
-                    )
-                    .clicked()
-                {
-                    self.credential_status =
-                        match save_api_key(self.settings.credentials.api_key.trim()) {
-                            Ok(()) => Some("API key saved to the system credential store.".into()),
-                            Err(error) => Some(format!("Could not save the key: {error}")),
-                        };
-                }
-            } else {
-                muted(ui, "Your key stays in memory for this session only.");
-            }
-            if let Some(status) = &self.credential_status {
-                muted(ui, status);
-            }
-        });
-    }
     fn review_window(&mut self, ctx: &egui::Context) {
         let mut action = None;
         if let Some(review) = &mut self.review {
@@ -473,6 +312,14 @@ impl App {
                             "Confirm the correct edition or adjust the search title."
                         },
                     );
+                    if !local_fallback
+                        && ui
+                            .checkbox(&mut review.arcade, "Arcade ROM (MAME / FBNeo)")
+                            .on_hover_text("Use a local MAME/FBNeo DAT or XML catalog first, then existing gamelist names, then saved title aliases. If none match, search or select the correct game manually.")
+                            .changed()
+                    {
+                        let _ = review.answer.send(ReviewAction::SetArcade(review.arcade));
+                    }
                     if !local_fallback {
                         ui.horizontal(|ui| {
                             ui.add(
@@ -712,10 +559,27 @@ impl App {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(!busy, |ui| match self.tab {
-                        0 => self.collection(ui),
+                        0 => collection_ui::draw(
+                            ui,
+                            &mut self.settings,
+                            &mut self.root,
+                            &mut self.output,
+                        ),
                         1 => artwork_ui::settings_panel(ui, &mut self.settings),
-                        2 => self.gamelist(ui),
-                        _ => self.connection(ui),
+                        2 => {
+                            let paths_ready = self.paths_ready();
+                            if gamelist_ui::draw(ui, &mut self.settings, paths_ready) {
+                                self.start(true);
+                            }
+                        }
+                        _ => connection_ui::draw(
+                            ui,
+                            &mut self.settings.credentials.api_key,
+                            &mut self.remember_api_key,
+                            &mut self.credential_status,
+                            |key| save_api_key(key).map_err(|error| error.to_string()),
+                            || delete_api_key().map_err(|error| error.to_string()),
+                        ),
                     });
                 });
             });

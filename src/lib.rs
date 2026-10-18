@@ -1,3 +1,4 @@
+pub mod arcade;
 pub mod artwork;
 pub mod engine;
 pub mod gamelist;

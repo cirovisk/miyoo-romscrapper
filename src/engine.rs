@@ -12,7 +12,7 @@ use std::{
     fs,
     io::Cursor,
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
+    sync::{Arc, atomic::AtomicBool},
 };
 
 #[derive(Clone)]
@@ -167,6 +167,45 @@ pub fn run_with_provider(
     stop: &AtomicBool,
     emit: impl Fn(Event),
 ) -> Result<()> {
+    let cache_directory = settings.image_directory().join(".rom-art-cache");
+    let mut cleanup = CacheCleanup(cache_directory.clone());
+    let result = run_with_provider_inner(settings, provider, stop, &emit, &cache_directory);
+    if let Err(error) = cleanup.clear() {
+        emit(Event::Log(format!(
+            "Could not remove temporary artwork cache: {error}"
+        )));
+        if result.is_ok() {
+            return Err(error.into());
+        }
+    }
+    result
+}
+
+struct CacheCleanup(PathBuf);
+
+impl CacheCleanup {
+    fn clear(&mut self) -> std::io::Result<()> {
+        match std::fs::remove_dir_all(&self.0) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for CacheCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn run_with_provider_inner(
+    settings: Settings,
+    provider: &Provider,
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+    cache_directory: &Path,
+) -> Result<()> {
     if !settings.onion_images && settings.output.as_os_str().is_empty() {
         bail!("Select an output folder");
     }
@@ -193,6 +232,7 @@ pub fn run_with_provider(
     let mut skipped = 0;
     let mut failed = 0;
     let mut names = HashMap::new();
+    let arcade_mode = Arc::new(AtomicBool::new(false));
     for (index, path) in paths.iter().enumerate() {
         cancelled(stop)?;
         // Preserve the relative directories AND extension to prevent same-stem collisions.
@@ -213,6 +253,8 @@ pub fn run_with_provider(
                         kind: settings.kind,
                         width: settings.width,
                         height: settings.height,
+                        arcade_root: Some(settings.root.clone()),
+                        arcade_mode: arcade_mode.clone(),
                     },
                     stop,
                     &emit,
@@ -229,7 +271,7 @@ pub fn run_with_provider(
                                 kind: settings.kind,
                                 width: settings.width,
                                 height: settings.height,
-                                cache_directory: &settings.image_directory().join(".rom-art-cache"),
+                                cache_directory,
                             },
                             media.as_ref(),
                             stop,

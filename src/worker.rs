@@ -1,4 +1,5 @@
 use crate::{
+    arcade,
     artwork::decode,
     provider::{ArtworkType, Candidate, Media, Provider},
     rom::{cancelled, title},
@@ -8,7 +9,11 @@ use image::ImageFormat;
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::Duration,
 };
 
@@ -21,6 +26,7 @@ pub enum Event {
         rom: PathBuf,
         query: String,
         candidates: Vec<Candidate>,
+        arcade: bool,
         answer: mpsc::Sender<ReviewAction>,
     },
     ArtworkReview {
@@ -35,6 +41,7 @@ pub enum Event {
 pub enum ReviewAction {
     Select(Candidate),
     Search(String),
+    SetArcade(bool),
     LocalImage(PathBuf),
     SelectArtwork(Media),
     Skip,
@@ -46,13 +53,15 @@ pub enum Resolved {
     LocalImage(PathBuf),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ResolveOptions {
     pub auto_first_result: bool,
     pub choose_artwork: bool,
     pub kind: ArtworkType,
     pub width: u32,
     pub height: u32,
+    pub arcade_root: Option<PathBuf>,
+    pub arcade_mode: Arc<AtomicBool>,
 }
 
 pub fn resolve(
@@ -62,26 +71,45 @@ pub fn resolve(
     stop: &AtomicBool,
     emit: &impl Fn(Event),
 ) -> Result<Option<Resolved>> {
-    let mut query = title(path)?;
+    let plain_title = title(path)?;
+    let mut query = plain_title.clone();
+    let mut arcade_mode = options.arcade_mode.load(Ordering::Relaxed);
     loop {
         let candidates = provider.search(&query, stop)?;
         if options.auto_first_result
             && let Some(candidate) = candidates.first()
         {
-            return resolve_artwork(provider, path, candidate.clone(), options, stop, emit);
+            return choose_game(
+                provider,
+                path,
+                candidate.clone(),
+                options,
+                arcade_mode,
+                stop,
+                emit,
+            );
         }
         let (tx, rx) = mpsc::channel();
         emit(Event::Review {
             rom: path.to_path_buf(),
             query: query.clone(),
             candidates: candidates.clone(),
+            arcade: arcade_mode,
             answer: tx,
         });
         loop {
             cancelled(stop)?;
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(ReviewAction::Select(candidate)) if candidates.contains(&candidate) => {
-                    return resolve_artwork(provider, path, candidate, options, stop, emit);
+                    return choose_game(
+                        provider,
+                        path,
+                        candidate,
+                        options,
+                        arcade_mode,
+                        stop,
+                        emit,
+                    );
                 }
                 Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
                 Ok(ReviewAction::Skip) => return Ok(None),
@@ -93,11 +121,50 @@ pub fn resolve(
                     query = search;
                     break;
                 }
+                Ok(ReviewAction::SetArcade(enabled)) => {
+                    arcade_mode = enabled;
+                    options.arcade_mode.store(enabled, Ordering::Relaxed);
+                    query = if enabled {
+                        options
+                            .arcade_root
+                            .as_deref()
+                            .and_then(|root| arcade::title(root, path).ok().flatten())
+                            .unwrap_or_else(|| {
+                                path.file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned()
+                            })
+                    } else {
+                        plain_title.clone()
+                    };
+                    break;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => bail!("Review closed"),
             }
         }
     }
+}
+
+fn choose_game(
+    provider: &Provider,
+    path: &Path,
+    candidate: Candidate,
+    options: ResolveOptions,
+    arcade_mode: bool,
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+) -> Result<Option<Resolved>> {
+    if arcade_mode
+        && let Some(root) = options.arcade_root.as_deref()
+        && let Err(error) = arcade::remember(root, path, &candidate.name)
+    {
+        emit(Event::Log(format!(
+            "Could not save arcade title alias: {error}"
+        )));
+    }
+    resolve_artwork(provider, path, candidate, options, stop, emit)
 }
 
 fn resolve_artwork(
@@ -167,6 +234,7 @@ pub fn request_local_image(
         rom: rom.to_path_buf(),
         query: format!("Artwork unavailable: {reason}"),
         candidates: Vec::new(),
+        arcade: false,
         answer: tx,
     });
     loop {

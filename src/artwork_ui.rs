@@ -23,17 +23,15 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
         ui.checkbox(
             &mut settings.auto_first_result,
             "Automatically use the first SteamGridDB game result",
-        );
-        muted(
-            ui,
-            "Turn this off to review search results before downloading.",
+        )
+        .on_hover_text(
+            "Turn this off to review search results before downloading and to mark arcade ROMs.",
         );
         ui.checkbox(
             &mut settings.choose_artwork,
             "Choose artwork from a gallery",
-        );
-        muted(
-            ui,
+        )
+        .on_hover_text(
             "After matching a game, compare available SteamGridDB images for the selected type.",
         );
         ui.label(egui::RichText::new("Miyoo Mini / OnionOS presets").strong());
@@ -51,11 +49,8 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
         ui.checkbox(
             &mut settings.onion_images,
             "Use OnionOS folder and filenames",
-        );
-        muted(
-            ui,
-            "Saves to <ROM folder>/Imgs/Game.png for Game.zip. Preserves aspect ratio without cropping. Select the list format on the Gamelist page.",
-        );
+        )
+        .on_hover_text("Saves to <ROM folder>/Imgs/Game.png for Game.zip. Preserves aspect ratio without cropping. Select the list format on the Gamelist page.");
         ui.separator();
         ui.label(egui::RichText::new("Artwork type").strong());
         egui::ComboBox::from_id_salt("kind")
@@ -105,13 +100,10 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
     });
     ui.add_space(4.0);
     card(ui, |ui| {
-        ui.checkbox(&mut settings.overwrite, "Replace existing artwork");
-        muted(ui, "Leave unchecked to keep your existing artwork.");
-        ui.checkbox(&mut settings.backup_existing, "Back up replaced files");
-        muted(
-            ui,
-            "Applies to artwork and game lists. Backups stay in the same folder.",
-        );
+        ui.checkbox(&mut settings.overwrite, "Replace existing artwork")
+            .on_hover_text("Leave unchecked to keep your existing artwork.");
+        ui.checkbox(&mut settings.backup_existing, "Back up replaced files")
+            .on_hover_text("Applies to artwork and game lists. Backups stay in the same folder.");
     });
 }
 
