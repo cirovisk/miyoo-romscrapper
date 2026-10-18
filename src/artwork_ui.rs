@@ -20,15 +20,25 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
     muted(ui, "Choose artwork that fits your library.");
     ui.add_space(8.0);
     card(ui, |ui| {
-        ui.checkbox(&mut settings.turbo_mode, "Turbo mode")
-            .on_hover_text("Suggested for large collections. Automatically uses the first game result and the top-ranked image, skips confirmation and gallery previews, and processes more ROMs in parallel.");
         ui.horizontal(|ui| {
-            ui.add(
-                egui::Slider::new(&mut settings.concurrency, 1..=MAX_CONCURRENCY)
-                    .text("Concurrent workers")
-                    .show_value(true),
-            )
-            .on_hover_text("Sets the maximum number of concurrent workers for each stage: game searches and artwork downloads. Higher values may use more bandwidth or encounter API throttling.");
+            ui.checkbox(&mut settings.turbo_mode, "Turbo mode")
+                .on_hover_text("Suggested for large collections. Automatically uses the first game result and the top-ranked image, skips confirmation and gallery previews, and processes more ROMs in parallel.");
+            ui.separator();
+            ui.label("Concurrent workers");
+            egui::ComboBox::from_id_salt("concurrency")
+                .selected_text(settings.concurrency.to_string())
+                .width(64.0)
+                .show_ui(ui, |ui| {
+                    for workers in 1..=MAX_CONCURRENCY {
+                        ui.selectable_value(
+                            &mut settings.concurrency,
+                            workers,
+                            workers.to_string(),
+                        );
+                    }
+                })
+                .response
+                .on_hover_text("Sets the maximum number of concurrent workers for each stage: game searches and artwork downloads. Higher values may use more bandwidth or encounter API throttling.");
         });
         ui.add_enabled_ui(!settings.turbo_mode, |ui| {
             ui.checkbox(
