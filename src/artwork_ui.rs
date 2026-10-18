@@ -121,7 +121,7 @@ pub(crate) fn review_window(ctx: &egui::Context, review: &mut Option<ArtworkChoi
                     review.game.name
                 ));
                 muted(ui, "Options are ordered by matching orientation, then community score. Some previews may be unavailable; the source file remains selectable.");
-                let columns = (ui.available_width() / 190.0).floor().max(1.0) as usize;
+                let columns = (ui.available_width() / 220.0).floor().max(1.0) as usize;
                 egui::ScrollArea::both()
                     .max_height(520.0)
                     .auto_shrink([false, false])
@@ -136,33 +136,58 @@ pub(crate) fn review_window(ctx: &egui::Context, review: &mut Option<ArtworkChoi
                                         .corner_radius(6)
                                         .inner_margin(10)
                                         .show(ui, |ui| {
-                                            ui.set_width(165.0);
+                                            ui.set_width(190.0);
                                             ui.set_min_height(300.0);
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(145.0, 180.0),
-                                                egui::Layout::centered_and_justified(
-                                                    egui::Direction::TopDown,
-                                                ),
-                                                |ui| {
+                                            ui.vertical(|ui| {
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(170.0, 180.0),
+                                                    egui::Layout::centered_and_justified(
+                                                        egui::Direction::TopDown,
+                                                    ),
+                                                    |ui| {
                                                     if let Some(Some(texture)) =
                                                         review.previews.get(index)
                                                     {
                                                         ui.add(
                                                             egui::Image::new(texture)
-                                                                .max_size(egui::vec2(140.0, 175.0))
+                                                                .max_size(egui::vec2(165.0, 175.0))
                                                                 .maintain_aspect_ratio(true),
                                                         );
                                                     } else {
                                                         muted(ui, "Preview unavailable");
                                                     }
-                                                },
-                                            );
-                                            ui.label(format!("{} × {}", media.width, media.height));
-                                            ui.label(format!("Score: {}", media.score));
-                                            ui.hyperlink_to("Open original ↗", media.url.clone());
-                                            if ui.button("Use this artwork").clicked() {
-                                                action = Some(ReviewAction::SelectArtwork(media.clone()));
-                                            }
+                                                    },
+                                                );
+                                                ui.add_sized(
+                                                    [ui.available_width(), 20.0],
+                                                    egui::Label::new(format!(
+                                                        "{} × {}",
+                                                        media.width, media.height
+                                                    )),
+                                                );
+                                                ui.add_sized(
+                                                    [ui.available_width(), 20.0],
+                                                    egui::Label::new(format!("Score: {}", media.score)),
+                                                );
+                                                ui.add_sized(
+                                                    [ui.available_width(), 22.0],
+                                                    egui::Hyperlink::from_label_and_url(
+                                                        "Open original ↗",
+                                                        media.url.clone(),
+                                                    ),
+                                                );
+                                                if ui
+                                                    .add_sized(
+                                                        [ui.available_width(), 30.0],
+                                                        egui::Button::new("Use this artwork"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    action = Some(ReviewAction::SelectArtwork(
+                                                        media.clone(),
+                                                    ));
+                                                }
+                                            });
                                         });
                                 }
                             });
