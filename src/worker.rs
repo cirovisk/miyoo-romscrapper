@@ -34,6 +34,7 @@ pub enum Event {
         query: String,
         candidates: Vec<Candidate>,
         arcade: bool,
+        can_back_to_game: bool,
         answer: mpsc::Sender<ReviewAction>,
     },
     ArtworkReview {
@@ -141,6 +142,7 @@ pub fn resolve_with_initial_search(
             query: query.clone(),
             candidates: candidates.clone(),
             arcade: arcade_mode,
+            can_back_to_game: false,
             answer: tx,
         });
         let mut reopen_game_review = false;
@@ -260,8 +262,7 @@ fn resolve_artwork(
     let mut media = match provider.artwork_options(game.id, options.kind, stop) {
         Ok(media) => media,
         Err(error) => {
-            return request_local_image(rom, &error.to_string(), stop, emit)
-                .map(GameResolution::Resolved);
+            return request_local_image_for_game(rom, &error.to_string(), stop, emit);
         }
     };
     media.sort_by_key(|m| {
@@ -328,19 +329,45 @@ pub fn request_local_image(
     stop: &AtomicBool,
     emit: &impl Fn(Event),
 ) -> Result<Option<Resolved>> {
+    match request_local_image_prompt(rom, reason, false, stop, emit)? {
+        GameResolution::Resolved(result) => Ok(result),
+        GameResolution::BackToGame => bail!("Cannot return to game selection"),
+    }
+}
+
+fn request_local_image_for_game(
+    rom: &Path,
+    reason: &str,
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+) -> Result<GameResolution> {
+    request_local_image_prompt(rom, reason, true, stop, emit)
+}
+
+fn request_local_image_prompt(
+    rom: &Path,
+    reason: &str,
+    can_back_to_game: bool,
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+) -> Result<GameResolution> {
     let (tx, rx) = mpsc::channel();
     emit(Event::Review {
         rom: rom.to_path_buf(),
         query: format!("Artwork unavailable: {reason}"),
         candidates: Vec::new(),
         arcade: false,
+        can_back_to_game,
         answer: tx,
     });
     loop {
         cancelled(stop)?;
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
-            Ok(ReviewAction::Skip) => return Ok(None),
+            Ok(ReviewAction::LocalImage(path)) => {
+                return Ok(GameResolution::Resolved(Some(Resolved::LocalImage(path))));
+            }
+            Ok(ReviewAction::BackToGame) => return Ok(GameResolution::BackToGame),
+            Ok(ReviewAction::Skip) => return Ok(GameResolution::Resolved(None)),
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(_) => bail!("Image selection closed"),
             _ => bail!("Choose a local image or skip this ROM"),

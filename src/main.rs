@@ -51,6 +51,7 @@ struct Review {
     query: String,
     candidates: Vec<Candidate>,
     arcade: bool,
+    can_back_to_game: bool,
     answer: mpsc::Sender<ReviewAction>,
 }
 struct App {
@@ -350,6 +351,7 @@ impl App {
                     query,
                     candidates,
                     arcade,
+                    can_back_to_game,
                     answer,
                 } => {
                     self.review = Some(Review {
@@ -357,6 +359,7 @@ impl App {
                         query,
                         candidates,
                         arcade,
+                        can_back_to_game,
                         answer,
                     })
                 }
@@ -477,7 +480,16 @@ impl App {
                                 });
                             }
                         });
-                    if ui.button("Skip this ROM").clicked() {
+                    if local_fallback && review.can_back_to_game {
+                        ui.horizontal(|ui| {
+                            if ui.button("Back to choose game").clicked() {
+                                action = Some(ReviewAction::BackToGame);
+                            }
+                            if ui.button("Skip this ROM").clicked() {
+                                action = Some(ReviewAction::Skip);
+                            }
+                        });
+                    } else if ui.button("Skip this ROM").clicked() {
                         action = Some(ReviewAction::Skip);
                     }
                     if ui.button("Choose a local image…").clicked()

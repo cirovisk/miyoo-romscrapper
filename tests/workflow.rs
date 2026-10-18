@@ -661,6 +661,70 @@ fn artwork_gallery_can_return_to_game_selection_without_researching() {
 }
 
 #[test]
+fn artwork_unavailable_dialog_can_return_to_game_selection() {
+    let (base, handle) = server(|_| {
+        vec![
+            json(serde_json::json!([
+                {"id":1,"name":"Game"},
+                {"id":2,"name":"Game Alternative"}
+            ])),
+            json(serde_json::json!([])),
+            json(serde_json::json!([])),
+        ]
+    });
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let review_count = std::sync::atomic::AtomicUsize::new(0);
+    let selected_game = std::sync::atomic::AtomicUsize::new(0);
+    let result = resolve(
+        &provider,
+        Path::new("Game.nes"),
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: true,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
+        },
+        &AtomicBool::new(false),
+        &|event| {
+            if let Event::Review {
+                candidates,
+                query,
+                answer,
+                ..
+            } = event
+            {
+                let step = review_count.fetch_add(1, Ordering::Relaxed);
+                if query.starts_with("Artwork unavailable:") {
+                    let action = if step == 1 {
+                        ReviewAction::BackToGame
+                    } else {
+                        ReviewAction::Skip
+                    };
+                    answer.send(action).unwrap();
+                } else {
+                    let candidate = candidates[if step == 0 { 0 } else { 1 }].clone();
+                    selected_game.store(candidate.id as usize, Ordering::Relaxed);
+                    answer.send(ReviewAction::Select(candidate)).unwrap();
+                }
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(result.is_none());
+    assert_eq!(selected_game.load(Ordering::Relaxed), 2);
+    assert_eq!(review_count.load(Ordering::Relaxed), 4);
+    let requests = handle.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].contains("/search/autocomplete/Game"));
+    assert!(requests[1].contains("/grids/game/1"));
+    assert!(requests[2].contains("/grids/game/2"));
+}
+
+#[test]
 fn failures_do_not_leak_keys_and_unsuccessful_json_is_rejected() {
     for status in [401, 403, 429, 503] {
         let (base, handle) = server(|_| vec![(status, b"TEST_SECRET".to_vec())]);
