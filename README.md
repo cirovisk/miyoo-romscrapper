@@ -101,7 +101,7 @@ The executable is written to `target/release/rom-art-rs` on Linux and `target/re
 
 To package a Linux AppImage manually, use a native machine of the target architecture, preferably Debian 12, and download the matching `appimagetool` and `runtime` from the [official AppImageKit](https://github.com/AppImage/AppImageKit/releases) and [type2-runtime](https://github.com/AppImage/type2-runtime/releases) releases. Set `ROM_SCRAPPER_ARCH`, `APPIMAGE_TOOL_BIN`, and `APPIMAGE_RUNTIME_FILE` to `x86_64` or `aarch64` and their downloaded file paths, then run `bash scripts/build-appimage.sh`. The script builds the release binary and writes the AppImage to `dist/`.
 
-The GitHub release workflow runs when a `v*` tag is pushed. It builds each AppImage on Debian 12 and the Windows executable on a Windows runner, then attaches those three files to the GitHub release. The source remains available for independent builds using the commands above.
+The GitHub release workflow runs when a `v*` tag is pushed (or can be started manually from GitHub Actions with a tag selected). It builds each AppImage on Debian 12 and the Windows executable on a Windows runner, then attaches those three files to the GitHub release. The source remains available for independent builds using the commands above.
 
 ## References
 
