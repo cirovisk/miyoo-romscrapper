@@ -1,6 +1,6 @@
 use rom_art_rs::{
     engine::{
-        Event, Resolved, ReviewAction, Settings, generate_local_gamelist, resolve,
+        Event, ResolveOptions, Resolved, ReviewAction, Settings, generate_local_gamelist, resolve,
         run_with_provider,
     },
     provider::{Candidate, Credentials, Provider, ServiceStopped, choose_media, exact_match},
@@ -185,7 +185,13 @@ fn ambiguous_result_can_be_selected_manually() {
     let selected = resolve(
         &provider,
         Path::new("Game.nes"),
-        false,
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: false,
+            kind: "grids",
+            width: 250,
+            height: 360,
+        },
         &AtomicBool::new(false),
         &|event| {
             if let Event::Review {
@@ -200,7 +206,10 @@ fn ambiguous_result_can_be_selected_manually() {
     )
     .unwrap()
     .unwrap();
-    assert!(matches!(selected, Resolved::Game(Candidate { id: 2, .. })));
+    assert!(matches!(
+        selected,
+        Resolved::Game(Candidate { id: 2, .. }, None)
+    ));
     handle.join().unwrap();
 }
 
@@ -216,26 +225,54 @@ fn unmatched_game_supports_research_and_cancellation() {
     let selected = resolve(
         &provider,
         Path::new("Unknown.nes"),
-        false,
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: false,
+            kind: "grids",
+            width: 250,
+            height: 360,
+        },
         &AtomicBool::new(false),
         &|event| {
-            if let Event::Review { answer, .. } = event {
-                answer
-                    .send(ReviewAction::Search("New title".into()))
-                    .unwrap();
+            if let Event::Review {
+                candidates, answer, ..
+            } = event
+            {
+                if candidates.is_empty() {
+                    answer
+                        .send(ReviewAction::Search("New title".into()))
+                        .unwrap();
+                } else {
+                    answer
+                        .send(ReviewAction::Select(candidates[0].clone()))
+                        .unwrap();
+                }
             }
         },
     )
     .unwrap()
     .unwrap();
-    assert!(matches!(selected, Resolved::Game(Candidate { id: 2, .. })));
+    assert!(matches!(
+        selected,
+        Resolved::Game(Candidate { id: 2, .. }, None)
+    ));
     handle.join().unwrap();
     let (base, handle) = server(|_| vec![json(serde_json::json!([]))]);
     let provider = Provider::with_base(credentials(), &base).unwrap();
     let stop = AtomicBool::new(false);
-    let error = resolve(&provider, Path::new("Unknown.nes"), false, &stop, &|_| {
-        stop.store(true, Ordering::Relaxed)
-    })
+    let error = resolve(
+        &provider,
+        Path::new("Unknown.nes"),
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: false,
+            kind: "grids",
+            width: 250,
+            height: 360,
+        },
+        &stop,
+        &|_| stop.store(true, Ordering::Relaxed),
+    )
     .unwrap_err();
     assert_eq!(error.to_string(), "Cancelled");
     handle.join().unwrap();

@@ -1,5 +1,5 @@
 use crate::{
-    provider::{Candidate, Credentials, Provider, ServiceStopped},
+    provider::{Candidate, Credentials, Media, Provider, ServiceStopped},
     rom::{cancelled, scan, title},
 };
 use anyhow::{Context, Result, bail};
@@ -28,6 +28,7 @@ pub struct Settings {
     pub overwrite: bool,
     pub backup_existing: bool,
     pub auto_first_result: bool,
+    pub choose_artwork: bool,
     pub only_missing: bool,
     pub gamelist: bool,
     pub onion_images: bool,
@@ -47,6 +48,7 @@ impl Default for Settings {
             overwrite: false,
             backup_existing: true,
             auto_first_result: true,
+            choose_artwork: false,
             only_missing: false,
             gamelist: true,
             onion_images: false,
@@ -80,33 +82,52 @@ pub enum Event {
         candidates: Vec<Candidate>,
         answer: mpsc::Sender<ReviewAction>,
     },
+    ArtworkReview {
+        rom: PathBuf,
+        game: Candidate,
+        media: Vec<Media>,
+        previews: Vec<Option<Vec<u8>>>,
+        answer: mpsc::Sender<ReviewAction>,
+    },
 }
 
 pub enum ReviewAction {
     Select(Candidate),
     Search(String),
     LocalImage(PathBuf),
+    SelectArtwork(Media),
     Skip,
 }
 
 #[derive(Debug)]
 pub enum Resolved {
-    Game(Candidate),
+    Game(Candidate, Option<Media>),
     LocalImage(PathBuf),
+}
+
+#[derive(Clone, Copy)]
+pub struct ResolveOptions<'a> {
+    pub auto_first_result: bool,
+    pub choose_artwork: bool,
+    pub kind: &'a str,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub fn resolve(
     provider: &Provider,
     path: &Path,
-    auto_first_result: bool,
+    options: ResolveOptions<'_>,
     stop: &AtomicBool,
     emit: &impl Fn(Event),
 ) -> Result<Option<Resolved>> {
     let mut query = title(path)?;
     loop {
         let candidates = provider.search(&query, stop)?;
-        if auto_first_result && let Some(candidate) = candidates.first() {
-            return Ok(Some(Resolved::Game(candidate.clone())));
+        if options.auto_first_result
+            && let Some(candidate) = candidates.first()
+        {
+            return resolve_artwork(provider, path, candidate.clone(), options, stop, emit);
         }
         let (tx, rx) = mpsc::channel();
         emit(Event::Review {
@@ -119,11 +140,14 @@ pub fn resolve(
             cancelled(stop)?;
             match rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(ReviewAction::Select(candidate)) if candidates.contains(&candidate) => {
-                    return Ok(Some(Resolved::Game(candidate)));
+                    return resolve_artwork(provider, path, candidate, options, stop, emit);
                 }
                 Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
                 Ok(ReviewAction::Skip) => return Ok(None),
                 Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
+                Ok(ReviewAction::SelectArtwork(_)) => {
+                    bail!("Choose a game before choosing artwork")
+                }
                 Ok(ReviewAction::Search(search)) => {
                     query = search;
                     break;
@@ -131,6 +155,89 @@ pub fn resolve(
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => bail!("Review closed"),
             }
+        }
+    }
+}
+
+fn resolve_artwork(
+    provider: &Provider,
+    rom: &Path,
+    game: Candidate,
+    options: ResolveOptions<'_>,
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+) -> Result<Option<Resolved>> {
+    if !options.choose_artwork || options.kind == "mix3" {
+        return Ok(Some(Resolved::Game(game, None)));
+    }
+    let mut media = match provider.artwork_options(game.id, options.kind, stop) {
+        Ok(media) => media,
+        Err(error) => {
+            return request_local_image(rom, &error.to_string(), stop, emit);
+        }
+    };
+    media.sort_by_key(|m| {
+        (
+            (m.width > m.height) != (options.width > options.height),
+            std::cmp::Reverse(m.score),
+        )
+    });
+    let previews = media
+        .iter()
+        .map(|item| {
+            let bytes = provider.get(&item.url, 4 * 1024 * 1024, stop).ok()?;
+            let thumbnail = decode(&bytes).ok()?.thumbnail(150, 200);
+            let mut output = Cursor::new(Vec::new());
+            thumbnail.write_to(&mut output, ImageFormat::Jpeg).ok()?;
+            Some(output.into_inner())
+        })
+        .collect();
+    let (tx, rx) = mpsc::channel();
+    emit(Event::ArtworkReview {
+        rom: rom.to_path_buf(),
+        game: game.clone(),
+        media: media.clone(),
+        previews,
+        answer: tx,
+    });
+    loop {
+        cancelled(stop)?;
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ReviewAction::SelectArtwork(selected)) if media.contains(&selected) => {
+                return Ok(Some(Resolved::Game(game, Some(selected))));
+            }
+            Ok(ReviewAction::SelectArtwork(_)) => {
+                bail!("Artwork selection is not among the results")
+            }
+            Ok(ReviewAction::Skip) => return Ok(None),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => bail!("Artwork review closed"),
+            _ => bail!("Invalid artwork review action"),
+        }
+    }
+}
+
+fn request_local_image(
+    rom: &Path,
+    reason: &str,
+    stop: &AtomicBool,
+    emit: &impl Fn(Event),
+) -> Result<Option<Resolved>> {
+    let (tx, rx) = mpsc::channel();
+    emit(Event::Review {
+        rom: rom.to_path_buf(),
+        query: format!("Artwork unavailable: {reason}"),
+        candidates: Vec::new(),
+        answer: tx,
+    });
+    loop {
+        cancelled(stop)?;
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
+            Ok(ReviewAction::Skip) => return Ok(None),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(_) => bail!("Image selection closed"),
+            _ => bail!("Choose a local image or skip this ROM"),
         }
     }
 }
@@ -204,6 +311,7 @@ fn fetch_image(
     provider: &Provider,
     game: &Candidate,
     kind: &str,
+    selected: Option<&Media>,
     settings: &Settings,
     stop: &AtomicBool,
 ) -> Result<DynamicImage> {
@@ -212,7 +320,10 @@ fn fetch_image(
         "grids" if settings.kind == "mix3" => (600, 900),
         _ => (settings.width, settings.height),
     };
-    let media = provider.artwork(game.id, kind, width, height, stop)?;
+    let media = match selected {
+        Some(media) => media.clone(),
+        None => provider.artwork(game.id, kind, width, height, stop)?,
+    };
     let key = format!("{:x}", Sha1::digest(media.url.as_bytes()));
     let cache = settings.image_directory().join(".rom-art-cache").join(key);
     let bytes = if cache.is_file() {
@@ -240,11 +351,12 @@ pub fn render(
     provider: &Provider,
     game: &Candidate,
     settings: &Settings,
+    selected: Option<&Media>,
     stop: &AtomicBool,
 ) -> Result<DynamicImage> {
     if settings.kind != "mix3" {
         return Ok(fit(
-            &fetch_image(provider, game, &settings.kind, settings, stop)?,
+            &fetch_image(provider, game, &settings.kind, selected, settings, stop)?,
             settings.width,
             settings.height,
         ));
@@ -256,7 +368,7 @@ pub fn render(
         ("grids", 0.0, 0.40, 0.45, 0.60),
         ("logos", 0.50, 0.70, 0.50, 0.30),
     ] {
-        let img = fetch_image(provider, game, kind, settings, stop)?;
+        let img = fetch_image(provider, game, kind, None, settings, stop)?;
         let img = fit(
             &img,
             (settings.width as f32 * w).max(1.0) as u32,
@@ -383,9 +495,8 @@ pub fn run_with_provider(
     let paths = if settings.only_missing {
         all_paths
             .iter()
+            .filter(|&rom| image_path(&settings, rom).is_ok_and(|p| !p.is_file()))
             .cloned()
-            .into_iter()
-            .filter(|rom| image_path(&settings, rom).is_ok_and(|p| !p.is_file()))
             .collect::<Vec<_>>()
     } else {
         all_paths.clone()
@@ -408,13 +519,43 @@ pub fn run_with_provider(
         } else {
             emit(Event::Log(format!("Matching: {}", relative.display())));
             let result = (|| -> Result<Option<String>> {
-                let Some(resolved) =
-                    resolve(provider, path, settings.auto_first_result, stop, &emit)?
+                let Some(resolved) = resolve(
+                    provider,
+                    path,
+                    ResolveOptions {
+                        auto_first_result: settings.auto_first_result,
+                        choose_artwork: settings.choose_artwork,
+                        kind: &settings.kind,
+                        width: settings.width,
+                        height: settings.height,
+                    },
+                    stop,
+                    &emit,
+                )?
                 else {
                     return Ok(None);
                 };
                 let (image, name) = match resolved {
-                    Resolved::Game(game) => (render(provider, &game, &settings, stop)?, game.name),
+                    Resolved::Game(game, media) => {
+                        match render(provider, &game, &settings, media.as_ref(), stop) {
+                            Ok(image) => (image, game.name),
+                            Err(error) => {
+                                let Some(Resolved::LocalImage(local)) =
+                                    request_local_image(path, &error.to_string(), stop, &emit)?
+                                else {
+                                    return Ok(None);
+                                };
+                                (
+                                    fit(
+                                        &decode(&fs::read(local)?)?,
+                                        settings.width,
+                                        settings.height,
+                                    ),
+                                    title(path)?,
+                                )
+                            }
+                        }
+                    }
                     Resolved::LocalImage(local) => (
                         fit(&decode(&fs::read(local)?)?, settings.width, settings.height),
                         title(path)?,

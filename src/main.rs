@@ -1,7 +1,8 @@
 use eframe::egui::{self, Color32, RichText};
+use keyring::Entry;
 use rom_art_rs::{
     engine::{Event, ReviewAction, Settings, generate_local_gamelist, run},
-    provider::Candidate,
+    provider::{Candidate, Media},
 };
 use std::{
     path::PathBuf,
@@ -19,11 +20,35 @@ const CARD: Color32 = Color32::from_rgb(42, 46, 50);
 const TEXT: Color32 = Color32::from_rgb(239, 240, 241);
 const MUTED: Color32 = Color32::from_rgb(167, 176, 184);
 const BLUE: Color32 = Color32::from_rgb(61, 174, 233);
+const KEYRING_SERVICE: &str = "miyoo-romscrapper";
+const KEYRING_USER: &str = "steamgriddb-api-key";
+
+fn keyring_entry() -> keyring::Result<Entry> {
+    Entry::new(KEYRING_SERVICE, KEYRING_USER)
+}
+
+fn save_api_key(key: &str) -> keyring::Result<()> {
+    keyring_entry()?.set_password(key)
+}
+
+fn delete_api_key() -> keyring::Result<()> {
+    match keyring_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
 
 struct Review {
     rom: PathBuf,
     query: String,
     candidates: Vec<Candidate>,
+    answer: mpsc::Sender<ReviewAction>,
+}
+struct ArtworkChoice {
+    rom: PathBuf,
+    game: Candidate,
+    media: Vec<Media>,
+    previews: Vec<Option<egui::TextureHandle>>,
     answer: mpsc::Sender<ReviewAction>,
 }
 struct App {
@@ -38,11 +63,31 @@ struct App {
     preview_name: String,
     tab: usize,
     review: Option<Review>,
+    artwork_review: Option<ArtworkChoice>,
+    remember_api_key: bool,
+    credential_status: Option<String>,
 }
 impl Default for App {
     fn default() -> Self {
         let mut settings = Settings::default();
-        settings.credentials.api_key = std::env::var("STEAMGRIDDB_API_KEY").unwrap_or_default();
+        let environment_key = std::env::var("STEAMGRIDDB_API_KEY").unwrap_or_default();
+        let (saved_key, remember_api_key, credential_status) =
+            match keyring_entry().and_then(|entry| entry.get_password()) {
+                Ok(key) => (key, true, None),
+                Err(keyring::Error::NoEntry) => (String::new(), false, None),
+                Err(error) => (
+                    String::new(),
+                    false,
+                    Some(format!(
+                        "Could not read the system credential store: {error}"
+                    )),
+                ),
+            };
+        settings.credentials.api_key = if environment_key.is_empty() {
+            saved_key
+        } else {
+            environment_key
+        };
         Self {
             settings,
             root: String::new(),
@@ -55,6 +100,9 @@ impl Default for App {
             preview_name: String::new(),
             tab: 0,
             review: None,
+            artwork_review: None,
+            remember_api_key,
+            credential_status,
         }
     }
 }
@@ -186,6 +234,7 @@ impl App {
                 Event::Finished => {
                     self.receiver = None;
                     self.review = None;
+                    self.artwork_review = None;
                 }
                 Event::Review {
                     rom,
@@ -199,6 +248,38 @@ impl App {
                         candidates,
                         answer,
                     })
+                }
+                Event::ArtworkReview {
+                    rom,
+                    game,
+                    media,
+                    previews,
+                    answer,
+                } => {
+                    let previews = previews
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, bytes)| {
+                            bytes.and_then(|bytes| {
+                                let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+                                Some(ctx.load_texture(
+                                    format!("artwork-option-{index}"),
+                                    egui::ColorImage::from_rgba_unmultiplied(
+                                        [image.width() as usize, image.height() as usize],
+                                        image.as_raw(),
+                                    ),
+                                    egui::TextureOptions::LINEAR,
+                                ))
+                            })
+                        })
+                        .collect();
+                    self.artwork_review = Some(ArtworkChoice {
+                        rom,
+                        game,
+                        media,
+                        previews,
+                        answer,
+                    });
                 }
                 Event::Preview(path) => {
                     if let Ok(img) = image::open(&path) {
@@ -333,6 +414,20 @@ impl App {
                 ui,
                 "Turn this off to review search results before downloading.",
             );
+            ui.add_enabled_ui(self.settings.kind != "mix3", |ui| {
+                ui.checkbox(
+                    &mut self.settings.choose_artwork,
+                    "Choose artwork from a gallery",
+                );
+            });
+            muted(
+                ui,
+                if self.settings.kind == "mix3" {
+                    "The three-image composition uses one source for each component."
+                } else {
+                    "After matching a game, compare every available image for the selected artwork type."
+                },
+            );
             ui.label(RichText::new("Miyoo Mini / OnionOS presets").strong());
             ui.horizontal_wrapped(|ui| {
                 for (label, width, height) in [
@@ -445,7 +540,43 @@ impl App {
                 "Sign in and generate a key in your account preferences. Developer credentials are not required.",
             );
             ui.separator();
-            muted(ui, "Your key stays in memory for this session only.");
+            if ui
+                .checkbox(
+                    &mut self.remember_api_key,
+                    "Remember this key securely between sessions",
+                )
+                .changed()
+                && !self.remember_api_key
+            {
+                self.credential_status = match delete_api_key() {
+                    Ok(()) => Some("Saved key removed from the system credential store.".into()),
+                    Err(error) => Some(format!("Could not remove the saved key: {error}")),
+                };
+            }
+            if self.remember_api_key {
+                muted(
+                    ui,
+                    "Save stores the key in your desktop credential wallet, not in app settings.",
+                );
+                if ui
+                    .add_enabled(
+                        !self.settings.credentials.api_key.trim().is_empty(),
+                        egui::Button::new("Save key securely"),
+                    )
+                    .clicked()
+                {
+                    self.credential_status =
+                        match save_api_key(self.settings.credentials.api_key.trim()) {
+                            Ok(()) => Some("API key saved to the system credential store.".into()),
+                            Err(error) => Some(format!("Could not save the key: {error}")),
+                        };
+                }
+            } else {
+                muted(ui, "Your key stays in memory for this session only.");
+            }
+            if let Some(status) = &self.credential_status {
+                muted(ui, status);
+            }
         });
     }
     fn review_window(&mut self, ctx: &egui::Context) {
@@ -457,26 +588,35 @@ impl App {
                 .default_width(580.0)
                 .show(ctx, |ui| {
                     ui.label(review.rom.file_name().unwrap_or_default().to_string_lossy());
+                    let local_fallback = review.query.starts_with("Artwork unavailable:");
                     muted(
                         ui,
-                        "Confirm the correct edition or adjust the search title.",
+                        if local_fallback {
+                            &review.query
+                        } else {
+                            "Confirm the correct edition or adjust the search title."
+                        },
                     );
-                    ui.horizontal(|ui| {
-                        ui.add(egui::TextEdit::singleline(&mut review.query).desired_width(380.0));
-                        if ui
-                            .add_enabled(
-                                !review.query.trim().is_empty(),
-                                egui::Button::new("Search"),
-                            )
-                            .clicked()
-                        {
-                            action = Some(ReviewAction::Search(review.query.trim().into()));
-                        }
-                    });
+                    if !local_fallback {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut review.query).desired_width(380.0),
+                            );
+                            if ui
+                                .add_enabled(
+                                    !review.query.trim().is_empty(),
+                                    egui::Button::new("Search"),
+                                )
+                                .clicked()
+                            {
+                                action = Some(ReviewAction::Search(review.query.trim().into()));
+                            }
+                        });
+                    }
                     egui::ScrollArea::vertical()
                         .max_height(300.0)
                         .show(ui, |ui| {
-                            if review.candidates.is_empty() {
+                            if review.candidates.is_empty() && !local_fallback {
                                 muted(ui, "No results. Try another title.");
                             }
                             for candidate in &review.candidates {
@@ -509,6 +649,73 @@ impl App {
         }
         if let Some(action) = action
             && let Some(review) = self.review.take()
+        {
+            let _ = review.answer.send(action);
+        }
+    }
+    fn artwork_review_window(&mut self, ctx: &egui::Context) {
+        let mut action = None;
+        if let Some(review) = &mut self.artwork_review {
+            egui::Window::new("Choose artwork")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(760.0)
+                .show(ctx, |ui| {
+                    ui.label(format!("{} · {}", review.rom.file_name().unwrap_or_default().to_string_lossy(), review.game.name));
+                    muted(ui, "Options are ordered by matching orientation, then community score. Some previews may be unavailable; the source file remains selectable.");
+                    let columns = (ui.available_width() / 190.0).floor().max(1.0) as usize;
+                    egui::ScrollArea::both()
+                        .max_height(520.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Grid::new("artwork_options_grid")
+                                .num_columns(columns)
+                                .spacing(egui::vec2(10.0, 10.0))
+                                .show(ui, |ui| {
+                                    for (index, media) in review.media.iter().enumerate() {
+                                        egui::Frame::new()
+                                            .fill(CARD)
+                                            .corner_radius(6)
+                                            .inner_margin(10)
+                                            .show(ui, |ui| {
+                                                ui.set_width(165.0);
+                                                ui.set_min_height(300.0);
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(145.0, 180.0),
+                                                    egui::Layout::centered_and_justified(
+                                                        egui::Direction::TopDown,
+                                                    ),
+                                                    |ui| {
+                                                        if let Some(Some(texture)) =
+                                                            review.previews.get(index)
+                                                        {
+                                                            ui.add(
+                                                                egui::Image::new(texture)
+                                                                    .max_size(egui::vec2(140.0, 175.0))
+                                                                    .maintain_aspect_ratio(true),
+                                                            );
+                                                        } else {
+                                                            muted(ui, "Preview unavailable");
+                                                        }
+                                                    },
+                                                );
+                                                ui.label(format!("{} × {}", media.width, media.height));
+                                                ui.label(format!("Score: {}", media.score));
+                                                ui.hyperlink_to("Open original ↗", media.url.clone());
+                                                if ui.button("Use this artwork").clicked() {
+                                                    action = Some(ReviewAction::SelectArtwork(media.clone()));
+                                                }
+                                            });
+                                    }
+                                });
+                        });
+                    if ui.button("Skip this ROM").clicked() {
+                        action = Some(ReviewAction::Skip);
+                    }
+                });
+        }
+        if let Some(action) = action
+            && let Some(review) = self.artwork_review.take()
         {
             let _ = review.answer.send(action);
         }
@@ -704,6 +911,7 @@ impl App {
                 });
             });
         self.review_window(ctx);
+        self.artwork_review_window(ctx);
     }
 }
 impl eframe::App for App {

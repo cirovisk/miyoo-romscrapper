@@ -16,7 +16,7 @@ pub struct Candidate {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Media {
     pub url: String,
     #[serde(default)]
@@ -99,6 +99,12 @@ impl Provider {
         if !matches!(kind, "grids" | "heroes" | "logos" | "icons") {
             bail!("Invalid artwork type");
         }
+        choose_media(self.artwork_options(game, kind, stop)?, width, height)
+    }
+    pub fn artwork_options(&self, game: u64, kind: &str, stop: &AtomicBool) -> Result<Vec<Media>> {
+        if !matches!(kind, "grids" | "heroes" | "logos" | "icons") {
+            bail!("Invalid artwork type");
+        }
         let value = self.api(
             &[kind, "game", &game.to_string()],
             &[
@@ -108,7 +114,10 @@ impl Provider {
             stop,
         )?;
         let media: Vec<Media> = serde_json::from_value(value)?;
-        choose_media(media, width, height)
+        if media.is_empty() {
+            bail!("No static artwork available for this type");
+        }
+        Ok(media)
     }
     pub fn get(&self, url: &str, limit: u64, stop: &AtomicBool) -> Result<Vec<u8>> {
         // Never attach the API token to artwork/CDN requests.
