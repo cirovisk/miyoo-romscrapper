@@ -64,4 +64,4 @@ cargo clippy --locked --all-targets -- -D warnings
 - [OnionOS FAQ and emulator documentation](https://onionui.github.io/docs/faq)
 - [SteamGridDB API](https://www.steamgriddb.com/api/v2)
 - [EmulationStation game list format](https://github.com/Aloshi/EmulationStation/blob/master/GAMELISTS.md)
-- [Historical Skraper analysis](docs/analise-skraper.md)
+- [Historical Skraper analysis](docs/skraper-analysis.md)
