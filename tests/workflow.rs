@@ -1,9 +1,9 @@
 use rom_art_rs::{
-    engine::{
-        Event, ResolveOptions, Resolved, ReviewAction, Settings, generate_local_gamelist, resolve,
-        run_with_provider,
+    engine::{Settings, generate_local_gamelist, run_with_provider},
+    provider::{
+        ArtworkType, Candidate, Credentials, Provider, ServiceStopped, choose_media, exact_match,
     },
-    provider::{Candidate, Credentials, Provider, ServiceStopped, choose_media, exact_match},
+    worker::{Event, ResolveOptions, Resolved, ReviewAction, resolve},
 };
 use std::{
     fs,
@@ -175,6 +175,41 @@ fn full_download_auth_cache_gamelist_and_preservation() {
 }
 
 #[test]
+fn artwork_download_can_skip_automatic_gamelist_export() {
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join("Artwork");
+    fs::write(root.path().join("Game.gba"), b"rom").unwrap();
+    let mut png = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(20, 10)
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let (base, handle) = server(|base| {
+        vec![
+            json(serde_json::json!([{"id":7,"name":"Game"}])),
+            json(
+                serde_json::json!([{"url":format!("{base}cdn/image.png"),"width":20,"height":10,"score":5}]),
+            ),
+            (200, png.into_inner()),
+        ]
+    });
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let settings = Settings {
+        root: root.path().into(),
+        output: output.clone(),
+        credentials: credentials(),
+        gamelist: false,
+        ..Default::default()
+    };
+
+    run_with_provider(settings, &provider, &AtomicBool::new(false), |_| {}).unwrap();
+
+    assert!(output.join("Game.gba.png").is_file());
+    assert!(!root.path().join("gamelist.xml").exists());
+    assert!(!root.path().join("miyoogamelist.xml").exists());
+    assert_eq!(handle.join().unwrap().len(), 3);
+}
+
+#[test]
 fn ambiguous_result_can_be_selected_manually() {
     let (base, handle) = server(|_| {
         vec![json(
@@ -188,7 +223,7 @@ fn ambiguous_result_can_be_selected_manually() {
         ResolveOptions {
             auto_first_result: false,
             choose_artwork: false,
-            kind: "grids",
+            kind: ArtworkType::Grid,
             width: 250,
             height: 360,
         },
@@ -228,7 +263,7 @@ fn unmatched_game_supports_research_and_cancellation() {
         ResolveOptions {
             auto_first_result: false,
             choose_artwork: false,
-            kind: "grids",
+            kind: ArtworkType::Grid,
             width: 250,
             height: 360,
         },
@@ -266,7 +301,7 @@ fn unmatched_game_supports_research_and_cancellation() {
         ResolveOptions {
             auto_first_result: false,
             choose_artwork: false,
-            kind: "grids",
+            kind: ArtworkType::Grid,
             width: 250,
             height: 360,
         },

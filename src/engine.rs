@@ -1,20 +1,18 @@
 use crate::{
-    provider::{Candidate, Credentials, Media, Provider, ServiceStopped},
+    artwork::{self, decode, fit},
+    provider::{ArtworkType, Credentials, Provider, ServiceStopped},
     rom::{cancelled, scan, title},
+    storage::save_with_backup,
+    worker::{Event, ResolveOptions, Resolved, request_local_image, resolve},
 };
 use anyhow::{Context, Result, bail};
-use image::{
-    DynamicImage, ImageFormat, RgbaImage,
-    imageops::{FilterType, overlay},
-};
-use sha1::{Digest, Sha1};
+use image::ImageFormat;
 use std::{
     collections::HashMap,
     fs,
-    io::{Cursor, Write},
+    io::Cursor,
     path::{Path, PathBuf},
-    sync::{atomic::AtomicBool, mpsc},
-    time::Duration,
+    sync::atomic::AtomicBool,
 };
 
 #[derive(Clone)]
@@ -22,7 +20,7 @@ pub struct Settings {
     pub root: PathBuf,
     pub output: PathBuf,
     pub extensions: String,
-    pub kind: String,
+    pub kind: ArtworkType,
     pub width: u32,
     pub height: u32,
     pub overwrite: bool,
@@ -42,7 +40,7 @@ impl Default for Settings {
             output: PathBuf::new(),
             extensions: "nes,sfc,smc,gb,gbc,gba,md,gen,sms,gg,pce,nds,z64,n64,v64,iso,chd,pbp,zip"
                 .into(),
-            kind: "grids".into(),
+            kind: ArtworkType::Grid,
             width: 250,
             height: 360,
             overwrite: false,
@@ -71,319 +69,6 @@ impl Settings {
         self.height = height;
     }
 }
-pub enum Event {
-    Log(String),
-    Progress(usize, usize),
-    Preview(PathBuf),
-    Finished,
-    Review {
-        rom: PathBuf,
-        query: String,
-        candidates: Vec<Candidate>,
-        answer: mpsc::Sender<ReviewAction>,
-    },
-    ArtworkReview {
-        rom: PathBuf,
-        game: Candidate,
-        media: Vec<Media>,
-        previews: Vec<Option<Vec<u8>>>,
-        answer: mpsc::Sender<ReviewAction>,
-    },
-}
-
-pub enum ReviewAction {
-    Select(Candidate),
-    Search(String),
-    LocalImage(PathBuf),
-    SelectArtwork(Media),
-    Skip,
-}
-
-#[derive(Debug)]
-pub enum Resolved {
-    Game(Candidate, Option<Media>),
-    LocalImage(PathBuf),
-}
-
-#[derive(Clone, Copy)]
-pub struct ResolveOptions<'a> {
-    pub auto_first_result: bool,
-    pub choose_artwork: bool,
-    pub kind: &'a str,
-    pub width: u32,
-    pub height: u32,
-}
-
-pub fn resolve(
-    provider: &Provider,
-    path: &Path,
-    options: ResolveOptions<'_>,
-    stop: &AtomicBool,
-    emit: &impl Fn(Event),
-) -> Result<Option<Resolved>> {
-    let mut query = title(path)?;
-    loop {
-        let candidates = provider.search(&query, stop)?;
-        if options.auto_first_result
-            && let Some(candidate) = candidates.first()
-        {
-            return resolve_artwork(provider, path, candidate.clone(), options, stop, emit);
-        }
-        let (tx, rx) = mpsc::channel();
-        emit(Event::Review {
-            rom: path.to_path_buf(),
-            query: query.clone(),
-            candidates: candidates.clone(),
-            answer: tx,
-        });
-        loop {
-            cancelled(stop)?;
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(ReviewAction::Select(candidate)) if candidates.contains(&candidate) => {
-                    return resolve_artwork(provider, path, candidate, options, stop, emit);
-                }
-                Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
-                Ok(ReviewAction::Skip) => return Ok(None),
-                Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
-                Ok(ReviewAction::SelectArtwork(_)) => {
-                    bail!("Choose a game before choosing artwork")
-                }
-                Ok(ReviewAction::Search(search)) => {
-                    query = search;
-                    break;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(_) => bail!("Review closed"),
-            }
-        }
-    }
-}
-
-fn resolve_artwork(
-    provider: &Provider,
-    rom: &Path,
-    game: Candidate,
-    options: ResolveOptions<'_>,
-    stop: &AtomicBool,
-    emit: &impl Fn(Event),
-) -> Result<Option<Resolved>> {
-    if !options.choose_artwork || options.kind == "mix3" {
-        return Ok(Some(Resolved::Game(game, None)));
-    }
-    let mut media = match provider.artwork_options(game.id, options.kind, stop) {
-        Ok(media) => media,
-        Err(error) => {
-            return request_local_image(rom, &error.to_string(), stop, emit);
-        }
-    };
-    media.sort_by_key(|m| {
-        (
-            (m.width > m.height) != (options.width > options.height),
-            std::cmp::Reverse(m.score),
-        )
-    });
-    let previews = media
-        .iter()
-        .map(|item| {
-            let bytes = provider.get(&item.url, 4 * 1024 * 1024, stop).ok()?;
-            let thumbnail = decode(&bytes).ok()?.thumbnail(150, 200);
-            let mut output = Cursor::new(Vec::new());
-            thumbnail.write_to(&mut output, ImageFormat::Jpeg).ok()?;
-            Some(output.into_inner())
-        })
-        .collect();
-    let (tx, rx) = mpsc::channel();
-    emit(Event::ArtworkReview {
-        rom: rom.to_path_buf(),
-        game: game.clone(),
-        media: media.clone(),
-        previews,
-        answer: tx,
-    });
-    loop {
-        cancelled(stop)?;
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(ReviewAction::SelectArtwork(selected)) if media.contains(&selected) => {
-                return Ok(Some(Resolved::Game(game, Some(selected))));
-            }
-            Ok(ReviewAction::SelectArtwork(_)) => {
-                bail!("Artwork selection is not among the results")
-            }
-            Ok(ReviewAction::Skip) => return Ok(None),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(_) => bail!("Artwork review closed"),
-            _ => bail!("Invalid artwork review action"),
-        }
-    }
-}
-
-fn request_local_image(
-    rom: &Path,
-    reason: &str,
-    stop: &AtomicBool,
-    emit: &impl Fn(Event),
-) -> Result<Option<Resolved>> {
-    let (tx, rx) = mpsc::channel();
-    emit(Event::Review {
-        rom: rom.to_path_buf(),
-        query: format!("Artwork unavailable: {reason}"),
-        candidates: Vec::new(),
-        answer: tx,
-    });
-    loop {
-        cancelled(stop)?;
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(ReviewAction::LocalImage(path)) => return Ok(Some(Resolved::LocalImage(path))),
-            Ok(ReviewAction::Skip) => return Ok(None),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(_) => bail!("Image selection closed"),
-            _ => bail!("Choose a local image or skip this ROM"),
-        }
-    }
-}
-
-/// Write a complete file in the destination directory before making it visible.
-pub fn save_atomic(path: &Path, bytes: &[u8], overwrite: bool) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("Destination has no parent directory")?;
-    fs::create_dir_all(parent)?;
-    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
-    temp.write_all(bytes)?;
-    temp.as_file().sync_all()?;
-    if overwrite {
-        temp.persist(path).map_err(|e| e.error)?;
-    } else {
-        temp.persist_noclobber(path).map_err(|e| e.error)?;
-    }
-    Ok(())
-}
-
-pub fn save_with_backup(
-    path: &Path,
-    bytes: &[u8],
-    overwrite: bool,
-    backup: bool,
-) -> Result<Option<PathBuf>> {
-    let backup = if overwrite && backup && path.exists() {
-        let original = fs::read(path)?;
-        let parent = path
-            .parent()
-            .context("Destination has no parent directory")?;
-        let prefix = format!(
-            "{}.backup-",
-            path.file_name()
-                .context("Invalid filename")?
-                .to_string_lossy()
-        );
-        let suffix = path
-            .extension()
-            .map(|ext| format!(".{}", ext.to_string_lossy()))
-            .unwrap_or_default();
-        let mut file = tempfile::Builder::new()
-            .prefix(&prefix)
-            .suffix(&suffix)
-            .tempfile_in(parent)?;
-        file.write_all(&original)?;
-        file.as_file().sync_all()?;
-        let (_, backup) = file.keep().map_err(|e| e.error)?;
-        Some(backup)
-    } else {
-        None
-    };
-    save_atomic(path, bytes, overwrite)?;
-    Ok(backup)
-}
-
-pub fn fit(image: &DynamicImage, width: u32, height: u32) -> DynamicImage {
-    let resized = image.resize(width, height, FilterType::Lanczos3);
-    let mut canvas = RgbaImage::new(width, height);
-    overlay(
-        &mut canvas,
-        &resized.to_rgba8(),
-        ((width - resized.width()) / 2) as i64,
-        ((height - resized.height()) / 2) as i64,
-    );
-    DynamicImage::ImageRgba8(canvas)
-}
-
-fn fetch_image(
-    provider: &Provider,
-    game: &Candidate,
-    kind: &str,
-    selected: Option<&Media>,
-    settings: &Settings,
-    stop: &AtomicBool,
-) -> Result<DynamicImage> {
-    let (width, height) = match kind {
-        "heroes" => (1920, 620),
-        "grids" if settings.kind == "mix3" => (600, 900),
-        _ => (settings.width, settings.height),
-    };
-    let media = match selected {
-        Some(media) => media.clone(),
-        None => provider.artwork(game.id, kind, width, height, stop)?,
-    };
-    let key = format!("{:x}", Sha1::digest(media.url.as_bytes()));
-    let cache = settings.image_directory().join(".rom-art-cache").join(key);
-    let bytes = if cache.is_file() {
-        fs::read(&cache)?
-    } else {
-        let bytes = provider.get(&media.url, 32 * 1024 * 1024, stop)?;
-        decode(&bytes)?;
-        save_atomic(&cache, &bytes, true)?;
-        bytes
-    };
-    decode(&bytes)
-}
-
-fn decode(bytes: &[u8]) -> Result<DynamicImage> {
-    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    Ok(reader.decode()?)
-}
-
-pub fn render(
-    provider: &Provider,
-    game: &Candidate,
-    settings: &Settings,
-    selected: Option<&Media>,
-    stop: &AtomicBool,
-) -> Result<DynamicImage> {
-    if settings.kind != "mix3" {
-        return Ok(fit(
-            &fetch_image(provider, game, &settings.kind, selected, settings, stop)?,
-            settings.width,
-            settings.height,
-        ));
-    }
-    let mut canvas = RgbaImage::new(settings.width, settings.height);
-    // All three components are required: incomplete mixes are reported for review.
-    for (kind, x, y, w, h) in [
-        ("heroes", 0.10, 0.0, 0.90, 0.80),
-        ("grids", 0.0, 0.40, 0.45, 0.60),
-        ("logos", 0.50, 0.70, 0.50, 0.30),
-    ] {
-        let img = fetch_image(provider, game, kind, None, settings, stop)?;
-        let img = fit(
-            &img,
-            (settings.width as f32 * w).max(1.0) as u32,
-            (settings.height as f32 * h).max(1.0) as u32,
-        );
-        overlay(
-            &mut canvas,
-            &img.to_rgba8(),
-            (settings.width as f32 * x) as i64,
-            (settings.height as f32 * y) as i64,
-        );
-    }
-    Ok(DynamicImage::ImageRgba8(canvas))
-}
-
 pub fn run(settings: Settings, stop: &AtomicBool, emit: impl Fn(Event)) -> Result<()> {
     let provider = Provider::new(settings.credentials.clone())?;
     run_with_provider(settings, &provider, stop, emit)
@@ -525,7 +210,7 @@ pub fn run_with_provider(
                     ResolveOptions {
                         auto_first_result: settings.auto_first_result,
                         choose_artwork: settings.choose_artwork,
-                        kind: &settings.kind,
+                        kind: settings.kind,
                         width: settings.width,
                         height: settings.height,
                     },
@@ -537,7 +222,18 @@ pub fn run_with_provider(
                 };
                 let (image, name) = match resolved {
                     Resolved::Game(game, media) => {
-                        match render(provider, &game, &settings, media.as_ref(), stop) {
+                        match artwork::render(
+                            provider,
+                            &game,
+                            &artwork::Options {
+                                kind: settings.kind,
+                                width: settings.width,
+                                height: settings.height,
+                                cache_directory: &settings.image_directory().join(".rom-art-cache"),
+                            },
+                            media.as_ref(),
+                            stop,
+                        ) {
                             Ok(image) => (image, game.name),
                             Err(error) => {
                                 let Some(Resolved::LocalImage(local)) =
@@ -609,6 +305,7 @@ pub fn run_with_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::save_atomic;
     #[test]
     fn onion_presets_set_sizes_folder_and_matching_filenames() {
         let root = PathBuf::from("/roms/GBA");
@@ -657,18 +354,6 @@ mod tests {
         assert!(save_with_backup(&path, b"v5", false, true).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"v4");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
-    }
-    #[test]
-    fn fit_preserves_ratio_and_transparency() {
-        let source = DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            200,
-            100,
-            image::Rgba([255, 0, 0, 255]),
-        ));
-        let result = fit(&source, 100, 100).to_rgba8();
-        assert_eq!(result.get_pixel(50, 0)[3], 0);
-        assert_eq!(result.get_pixel(50, 50)[0], 255);
-        assert_eq!(result.get_pixel(50, 99)[3], 0);
     }
     #[test]
     fn existing_files_remain_untouched() {

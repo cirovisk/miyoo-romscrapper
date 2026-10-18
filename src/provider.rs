@@ -27,6 +27,49 @@ pub struct Media {
     pub score: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtworkType {
+    Grid,
+    Hero,
+    Logo,
+    Icon,
+}
+
+impl ArtworkType {
+    pub const ALL: [Self; 4] = [Self::Grid, Self::Hero, Self::Logo, Self::Icon];
+
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            Self::Grid => "grids",
+            Self::Hero => "heroes",
+            Self::Logo => "logos",
+            Self::Icon => "icons",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Grid => "Covers",
+            Self::Hero => "Banners / heroes",
+            Self::Logo => "Logos",
+            Self::Icon => "Icons",
+        }
+    }
+}
+
+#[cfg(test)]
+mod artwork_type_tests {
+    use super::ArtworkType;
+
+    #[test]
+    fn artwork_types_match_steamgriddb_endpoints() {
+        assert_eq!(
+            ArtworkType::ALL.map(ArtworkType::endpoint),
+            ["grids", "heroes", "logos", "icons"]
+        );
+    }
+}
+
 #[derive(Debug)]
 pub struct ServiceStopped(pub u16);
 impl std::fmt::Display for ServiceStopped {
@@ -91,22 +134,21 @@ impl Provider {
     pub fn artwork(
         &self,
         game: u64,
-        kind: &str,
+        kind: ArtworkType,
         width: u32,
         height: u32,
         stop: &AtomicBool,
     ) -> Result<Media> {
-        if !matches!(kind, "grids" | "heroes" | "logos" | "icons") {
-            bail!("Invalid artwork type");
-        }
         choose_media(self.artwork_options(game, kind, stop)?, width, height)
     }
-    pub fn artwork_options(&self, game: u64, kind: &str, stop: &AtomicBool) -> Result<Vec<Media>> {
-        if !matches!(kind, "grids" | "heroes" | "logos" | "icons") {
-            bail!("Invalid artwork type");
-        }
+    pub fn artwork_options(
+        &self,
+        game: u64,
+        kind: ArtworkType,
+        stop: &AtomicBool,
+    ) -> Result<Vec<Media>> {
         let value = self.api(
-            &[kind, "game", &game.to_string()],
+            &[kind.endpoint(), "game", &game.to_string()],
             &[
                 ("types", "static"),
                 ("mimes", "image/png,image/jpeg,image/webp"),

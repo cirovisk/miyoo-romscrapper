@@ -1,8 +1,11 @@
+mod artwork_ui;
+
 use eframe::egui::{self, Color32, RichText};
 use keyring::Entry;
 use rom_art_rs::{
-    engine::{Event, ReviewAction, Settings, generate_local_gamelist, run},
-    provider::{Candidate, Media},
+    engine::{Settings, generate_local_gamelist, run},
+    provider::Candidate,
+    worker::{Event, ReviewAction},
 };
 use std::{
     path::PathBuf,
@@ -44,13 +47,6 @@ struct Review {
     candidates: Vec<Candidate>,
     answer: mpsc::Sender<ReviewAction>,
 }
-struct ArtworkChoice {
-    rom: PathBuf,
-    game: Candidate,
-    media: Vec<Media>,
-    previews: Vec<Option<egui::TextureHandle>>,
-    answer: mpsc::Sender<ReviewAction>,
-}
 struct App {
     settings: Settings,
     root: String,
@@ -63,7 +59,7 @@ struct App {
     preview_name: String,
     tab: usize,
     review: Option<Review>,
-    artwork_review: Option<ArtworkChoice>,
+    artwork_review: Option<artwork_ui::ArtworkChoice>,
     remember_api_key: bool,
     credential_status: Option<String>,
 }
@@ -167,16 +163,6 @@ fn folder(ui: &mut egui::Ui, label: &str, value: &mut String) {
         }
     });
 }
-fn media_label(kind: &str) -> &str {
-    match kind {
-        "grids" => "Covers",
-        "heroes" => "Banners / heroes",
-        "logos" => "Logos",
-        "icons" => "Icons",
-        "mix3" => "3-image composition",
-        _ => kind,
-    }
-}
 
 impl App {
     fn paths_ready(&self) -> bool {
@@ -273,7 +259,7 @@ impl App {
                             })
                         })
                         .collect();
-                    self.artwork_review = Some(ArtworkChoice {
+                    self.artwork_review = Some(artwork_ui::ArtworkChoice {
                         rom,
                         game,
                         media,
@@ -350,6 +336,15 @@ impl App {
         );
         ui.add_space(8.0);
         card(ui, |ui| {
+            ui.checkbox(
+                &mut self.settings.gamelist,
+                "Generate game lists after artwork downloads",
+            );
+            muted(
+                ui,
+                "Turn this off to download images without changing any game list. The local export button below always generates lists when clicked.",
+            );
+            ui.separator();
             ui.label(RichText::new("List format").strong());
             egui::ComboBox::from_id_salt("gamelist_format")
                 .selected_text(self.settings.gamelist_format.label())
@@ -377,10 +372,6 @@ impl App {
                     "Select one system folder. OnionOS displays games from subfolders as a flat list. Refresh all ROMs on the Miyoo after exporting.",
                 );
             }
-            ui.checkbox(
-                &mut self.settings.gamelist,
-                "Create / update the selected lists after downloading",
-            );
             muted(
                 ui,
                 "Select one system folder. Existing entries and custom names are retained.",
@@ -399,121 +390,6 @@ impl App {
             {
                 self.start(true);
             }
-        });
-    }
-    fn images(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Artwork");
-        muted(ui, "Choose artwork that fits your library.");
-        ui.add_space(8.0);
-        card(ui, |ui| {
-            ui.checkbox(
-                &mut self.settings.auto_first_result,
-                "Automatically use the first SteamGridDB game result",
-            );
-            muted(
-                ui,
-                "Turn this off to review search results before downloading.",
-            );
-            ui.add_enabled_ui(self.settings.kind != "mix3", |ui| {
-                ui.checkbox(
-                    &mut self.settings.choose_artwork,
-                    "Choose artwork from a gallery",
-                );
-            });
-            muted(
-                ui,
-                if self.settings.kind == "mix3" {
-                    "The three-image composition uses one source for each component."
-                } else {
-                    "After matching a game, compare every available image for the selected artwork type."
-                },
-            );
-            ui.label(RichText::new("Miyoo Mini / OnionOS presets").strong());
-            ui.horizontal_wrapped(|ui| {
-                for (label, width, height) in [
-                    ("Portrait · 250 × 360", 250, 360),
-                    ("Square · 250 × 250", 250, 250),
-                    ("Landscape · 250 × 180", 250, 180),
-                ] {
-                    if ui.button(label).clicked() {
-                        self.settings.onion_preset(width, height);
-                    }
-                }
-            });
-            ui.checkbox(
-                &mut self.settings.onion_images,
-                "Use OnionOS folder and filenames",
-            );
-            muted(
-                ui,
-                "Saves to <ROM folder>/Imgs/Game.png for Game.zip. Preserves aspect ratio without cropping. Select the list format on the Gamelist page.",
-            );
-            ui.separator();
-            ui.label(RichText::new("Artwork type").strong());
-            egui::ComboBox::from_id_salt("kind")
-                .width(280.0)
-                .selected_text(media_label(&self.settings.kind))
-                .show_ui(ui, |ui| {
-                    for kind in ["grids", "heroes", "logos", "icons", "mix3"] {
-                        ui.selectable_value(
-                            &mut self.settings.kind,
-                            kind.into(),
-                            media_label(kind),
-                        );
-                    }
-                });
-            muted(
-                ui,
-                "Selection prioritizes image orientation and community ratings.",
-            );
-            if self.settings.kind == "mix3" {
-                muted(
-                    ui,
-                    "Combines a banner, cover and logo. All three components must be available.",
-                );
-            }
-            ui.separator();
-            ui.label(RichText::new("PNG dimensions").strong());
-            ui.horizontal(|ui| {
-                ui.label("Width");
-                ui.add(
-                    egui::DragValue::new(&mut self.settings.width)
-                        .range(1..=4096)
-                        .suffix(" px"),
-                );
-                ui.label("Height");
-                ui.add(
-                    egui::DragValue::new(&mut self.settings.height)
-                        .range(1..=4096)
-                        .suffix(" px"),
-                );
-            });
-            ui.horizontal(|ui| {
-                for (name, w, h) in [
-                    ("Handheld", 250, 360),
-                    ("Steam cover", 600, 900),
-                    ("Banner", 920, 430),
-                ] {
-                    if ui.button(name).clicked() {
-                        self.settings.width = w;
-                        self.settings.height = h;
-                    }
-                }
-            });
-            muted(
-                ui,
-                "Aspect ratio is preserved with transparent padding and no cropping.",
-            );
-        });
-        ui.add_space(4.0);
-        card(ui, |ui| {
-            ui.checkbox(&mut self.settings.overwrite, "Replace existing artwork");
-            muted(ui, "Leave unchecked to keep your existing artwork.");
-            ui.checkbox(&mut self.settings.backup_existing, "Back up replaced files");
-            muted(
-                ui,
-                "Applies to artwork and game lists. Backups stay in the same folder.",
-            );
         });
     }
     fn connection(&mut self, ui: &mut egui::Ui) {
@@ -649,73 +525,6 @@ impl App {
         }
         if let Some(action) = action
             && let Some(review) = self.review.take()
-        {
-            let _ = review.answer.send(action);
-        }
-    }
-    fn artwork_review_window(&mut self, ctx: &egui::Context) {
-        let mut action = None;
-        if let Some(review) = &mut self.artwork_review {
-            egui::Window::new("Choose artwork")
-                .collapsible(false)
-                .resizable(true)
-                .default_width(760.0)
-                .show(ctx, |ui| {
-                    ui.label(format!("{} · {}", review.rom.file_name().unwrap_or_default().to_string_lossy(), review.game.name));
-                    muted(ui, "Options are ordered by matching orientation, then community score. Some previews may be unavailable; the source file remains selectable.");
-                    let columns = (ui.available_width() / 190.0).floor().max(1.0) as usize;
-                    egui::ScrollArea::both()
-                        .max_height(520.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            egui::Grid::new("artwork_options_grid")
-                                .num_columns(columns)
-                                .spacing(egui::vec2(10.0, 10.0))
-                                .show(ui, |ui| {
-                                    for (index, media) in review.media.iter().enumerate() {
-                                        egui::Frame::new()
-                                            .fill(CARD)
-                                            .corner_radius(6)
-                                            .inner_margin(10)
-                                            .show(ui, |ui| {
-                                                ui.set_width(165.0);
-                                                ui.set_min_height(300.0);
-                                                ui.allocate_ui_with_layout(
-                                                    egui::vec2(145.0, 180.0),
-                                                    egui::Layout::centered_and_justified(
-                                                        egui::Direction::TopDown,
-                                                    ),
-                                                    |ui| {
-                                                        if let Some(Some(texture)) =
-                                                            review.previews.get(index)
-                                                        {
-                                                            ui.add(
-                                                                egui::Image::new(texture)
-                                                                    .max_size(egui::vec2(140.0, 175.0))
-                                                                    .maintain_aspect_ratio(true),
-                                                            );
-                                                        } else {
-                                                            muted(ui, "Preview unavailable");
-                                                        }
-                                                    },
-                                                );
-                                                ui.label(format!("{} × {}", media.width, media.height));
-                                                ui.label(format!("Score: {}", media.score));
-                                                ui.hyperlink_to("Open original ↗", media.url.clone());
-                                                if ui.button("Use this artwork").clicked() {
-                                                    action = Some(ReviewAction::SelectArtwork(media.clone()));
-                                                }
-                                            });
-                                    }
-                                });
-                        });
-                    if ui.button("Skip this ROM").clicked() {
-                        action = Some(ReviewAction::Skip);
-                    }
-                });
-        }
-        if let Some(action) = action
-            && let Some(review) = self.artwork_review.take()
         {
             let _ = review.answer.send(action);
         }
@@ -888,7 +697,7 @@ impl App {
                 }
                 ui.add_space(16.0);
                 ui.separator();
-                ui.label(media_label(&self.settings.kind));
+                ui.label(self.settings.kind.label());
                 muted(
                     ui,
                     &format!(
@@ -904,14 +713,14 @@ impl App {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(!busy, |ui| match self.tab {
                         0 => self.collection(ui),
-                        1 => self.images(ui),
+                        1 => artwork_ui::settings_panel(ui, &mut self.settings),
                         2 => self.gamelist(ui),
                         _ => self.connection(ui),
                     });
                 });
             });
         self.review_window(ctx);
-        self.artwork_review_window(ctx);
+        artwork_ui::review_window(ctx, &mut self.artwork_review);
     }
 }
 impl eframe::App for App {
