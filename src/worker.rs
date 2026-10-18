@@ -1,7 +1,7 @@
 use crate::{
     arcade,
     artwork::decode,
-    provider::{ArtworkType, Candidate, Media, Provider},
+    provider::{ArtworkType, Candidate, Media, Provider, exact_match},
     rom::{cancelled, title},
 };
 use anyhow::{Result, bail};
@@ -93,19 +93,21 @@ pub fn resolve_with_initial_search(
             Some(Err(error)) => return Err(anyhow::anyhow!(error)),
             None => provider.search(&query, stop)?,
         };
-        if options.auto_first_result
-            && let Some(candidate) = candidates.first()
-        {
+        if options.auto_first_result {
+            if let Some(candidate) = exact_match(&query, &candidates) {
+                on_decided();
+                return choose_game(
+                    provider,
+                    path,
+                    candidate.clone(),
+                    options,
+                    arcade_mode,
+                    stop,
+                    emit,
+                );
+            }
             on_decided();
-            return choose_game(
-                provider,
-                path,
-                candidate.clone(),
-                options,
-                arcade_mode,
-                stop,
-                emit,
-            );
+            return Ok(None);
         }
         let (tx, rx) = mpsc::channel();
         emit(Event::Review {

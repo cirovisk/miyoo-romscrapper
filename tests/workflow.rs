@@ -95,6 +95,38 @@ fn matches_require_unique_exact_title() {
 }
 
 #[test]
+fn automatic_selection_skips_results_without_an_exact_title_match() {
+    let (base, handle) =
+        server(|_| vec![json(serde_json::json!([{"id":7,"name":"Different Game"}]))]);
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let review_shown = std::sync::atomic::AtomicBool::new(false);
+    let selected = resolve(
+        &provider,
+        Path::new("Unknown.nes"),
+        ResolveOptions {
+            auto_first_result: true,
+            choose_artwork: false,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
+        },
+        &AtomicBool::new(false),
+        &|event| {
+            if matches!(event, Event::Review { .. }) {
+                review_shown.store(true, Ordering::Relaxed);
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(selected.is_none());
+    assert!(!review_shown.load(Ordering::Relaxed));
+    assert_eq!(handle.join().unwrap().len(), 1);
+}
+
+#[test]
 fn chooses_orientation_then_score_and_handles_empty() {
     let media = serde_json::from_value(serde_json::json!([
         {"url":"wide","width":920,"height":430,"score":100},
