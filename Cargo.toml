@@ -1,0 +1,17 @@
+[package]
+name = "rom-art-rs"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+tempfile = "3"
+walkdir = "2"
+xmltree = "0.11"
