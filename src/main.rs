@@ -11,6 +11,7 @@ use rom_art_rs::{
     worker::{Event, ReviewAction},
 };
 use std::{
+    cell::Cell,
     collections::HashSet,
     path::{Path, PathBuf},
     sync::{
@@ -247,6 +248,7 @@ impl App {
         self.logs.clear();
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let totals = Cell::new([0usize; 4]);
                 for (index, settings) in jobs.into_iter().enumerate() {
                     if stop.load(Ordering::Relaxed) {
                         break;
@@ -266,13 +268,33 @@ impl App {
                         "Processing system: {system} ({}/{job_count})",
                         index + 1
                     )));
-                    let emit = |event| {
-                        let _ = tx.send(event);
-                    };
-                    let result = if local_gamelist {
-                        generate_local_gamelist(settings, &stop, emit)
-                    } else {
-                        run(settings, &stop, emit)
+                    let result = {
+                        let emit = |event| match event {
+                            Event::Summary {
+                                saved,
+                                skipped,
+                                no_match,
+                                failed,
+                            } => {
+                                let mut values = totals.get();
+                                values[0] += saved;
+                                values[1] += skipped;
+                                values[2] += no_match;
+                                values[3] += failed;
+                                totals.set(values);
+                                let _ = tx.send(Event::Log(format!(
+                                    "System summary: {saved} images saved, {skipped} kept or skipped, {no_match} ROMs had no game match, {failed} need review"
+                                )));
+                            }
+                            event => {
+                                let _ = tx.send(event);
+                            }
+                        };
+                        if local_gamelist {
+                            generate_local_gamelist(settings, &stop, emit)
+                        } else {
+                            run(settings, &stop, emit)
+                        }
                     };
                     match result {
                         Ok(()) => {
@@ -284,6 +306,13 @@ impl App {
                         }
                     }
                     let _ = tx.send(Event::SystemProgress(index + 1, job_count, None));
+                }
+                if !local_gamelist {
+                    let [saved, skipped, no_match, failed] = totals.get();
+                    let _ = tx.send(Event::Log(format!(
+                        "Search complete: {} images saved, {} kept or skipped, {} ROMs had no game match, {} need review",
+                        saved, skipped, no_match, failed
+                    )));
                 }
             }));
             if outcome.is_err() {
@@ -300,6 +329,7 @@ impl App {
             .unwrap_or_default();
         for event in events {
             match event {
+                Event::Summary { .. } => {}
                 Event::Log(text) => {
                     self.logs.push(text);
                     if self.logs.len() > 2000 {

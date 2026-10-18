@@ -121,8 +121,68 @@ fn automatic_selection_skips_results_without_an_exact_title_match() {
     )
     .unwrap();
 
-    assert!(selected.is_none());
+    assert!(matches!(selected, Some(Resolved::NoMatch)));
     assert!(!review_shown.load(Ordering::Relaxed));
+    assert_eq!(handle.join().unwrap().len(), 1);
+}
+
+#[test]
+fn manual_skip_without_a_title_match_is_counted_as_unmatched() {
+    let (base, handle) = server(|_| vec![json(serde_json::json!([]))]);
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let selected = resolve(
+        &provider,
+        Path::new("Unknown.nes"),
+        ResolveOptions {
+            auto_first_result: false,
+            choose_artwork: false,
+            kind: ArtworkType::Grid,
+            width: 250,
+            height: 360,
+            arcade_root: None,
+            arcade_mode: Arc::new(AtomicBool::new(false)),
+        },
+        &AtomicBool::new(false),
+        &|event| {
+            if let Event::Review { answer, .. } = event {
+                answer.send(ReviewAction::Skip).unwrap();
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(selected, Some(Resolved::NoMatch)));
+    assert_eq!(handle.join().unwrap().len(), 1);
+}
+
+#[test]
+fn batch_summary_counts_roms_without_a_game_match() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("Unknown.nes"), b"rom").unwrap();
+    let (base, handle) =
+        server(|_| vec![json(serde_json::json!([{"id":7,"name":"Different Game"}]))]);
+    let provider = Provider::with_base(credentials(), &base).unwrap();
+    let no_match = std::sync::atomic::AtomicUsize::new(0);
+    let settings = Settings {
+        root: root.path().to_path_buf(),
+        output: root.path().join("Artwork"),
+        credentials: credentials(),
+        auto_first_result: true,
+        gamelist: false,
+        ..Default::default()
+    };
+
+    run_with_provider(settings, &provider, &AtomicBool::new(false), |event| {
+        if let Event::Summary {
+            no_match: count, ..
+        } = event
+        {
+            no_match.store(count, Ordering::Relaxed);
+        }
+    })
+    .unwrap();
+
+    assert_eq!(no_match.load(Ordering::Relaxed), 1);
     assert_eq!(handle.join().unwrap().len(), 1);
 }
 

@@ -19,6 +19,12 @@ use std::{
 
 pub enum Event {
     Log(String),
+    Summary {
+        saved: usize,
+        skipped: usize,
+        no_match: usize,
+        failed: usize,
+    },
     Progress(usize, usize),
     SystemProgress(usize, usize, Option<String>),
     Preview(PathBuf),
@@ -52,6 +58,7 @@ pub enum ReviewAction {
 pub enum Resolved {
     Game(Candidate, Option<Media>),
     LocalImage(PathBuf),
+    NoMatch,
 }
 
 #[derive(Clone)]
@@ -107,7 +114,7 @@ pub fn resolve_with_initial_search(
                 );
             }
             on_decided();
-            return Ok(None);
+            return Ok(Some(Resolved::NoMatch));
         }
         let (tx, rx) = mpsc::channel();
         emit(Event::Review {
@@ -135,7 +142,11 @@ pub fn resolve_with_initial_search(
                 Ok(ReviewAction::Select(_)) => bail!("Selection is not among the search results"),
                 Ok(ReviewAction::Skip) => {
                     on_decided();
-                    return Ok(None);
+                    return if exact_match(&query, &candidates).is_none() {
+                        Ok(Some(Resolved::NoMatch))
+                    } else {
+                        Ok(None)
+                    };
                 }
                 Ok(ReviewAction::LocalImage(path)) => {
                     on_decided();

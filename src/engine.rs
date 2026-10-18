@@ -247,6 +247,7 @@ struct DownloadStats {
     names: HashMap<PathBuf, String>,
     saved: usize,
     skipped: usize,
+    no_match: usize,
     failed: usize,
     completed: usize,
     total: usize,
@@ -340,6 +341,7 @@ fn process_download(
             fit(&decode(&fs::read(local)?)?, settings.width, settings.height),
             title(&job.path)?,
         ),
+        Resolved::NoMatch => bail!("Cannot download artwork for a ROM without a game match"),
     };
     let mut png = Cursor::new(Vec::new());
     image.write_to(&mut png, ImageFormat::Png)?;
@@ -516,6 +518,7 @@ fn run_with_provider_inner(
         names: HashMap::new(),
         saved: 0,
         skipped: 0,
+        no_match: 0,
         failed: 0,
         completed: 0,
         total,
@@ -568,6 +571,12 @@ fn run_with_provider_inner(
                 }
                 drop(on_decided);
                 match result {
+                    Ok(Some(Resolved::NoMatch)) => {
+                        stats.no_match += 1;
+                        stats.completed += 1;
+                        emit(Event::Log(format!("No match: {}", relative.display())));
+                        emit(Event::Progress(stats.completed, total));
+                    }
                     Ok(Some(resolved)) => {
                         while downloads.is_full() {
                             let result = downloads.take()?;
@@ -612,10 +621,12 @@ fn run_with_provider_inner(
     if settings.gamelist {
         write_gamelist(&settings, &all_paths, &stats.names, &emit)?;
     }
-    emit(Event::Log(format!(
-        "Finished: {} images saved, {} kept or skipped, {} need review",
-        stats.saved, stats.skipped, stats.failed
-    )));
+    emit(Event::Summary {
+        saved: stats.saved,
+        skipped: stats.skipped,
+        no_match: stats.no_match,
+        failed: stats.failed,
+    });
     Ok(())
 }
 
