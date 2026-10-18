@@ -79,7 +79,7 @@ pub fn scan(root: &Path, extensions: &str) -> Result<Vec<PathBuf>> {
         bail!("Select an existing ROM folder");
     }
     let extensions: Vec<_> = extensions
-        .split(',')
+        .split(|c: char| c == ',' || c == ';' || c.is_whitespace())
         .map(|s| s.trim().trim_start_matches('.').to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
@@ -109,6 +109,7 @@ pub fn scan(root: &Path, extensions: &str) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     #[test]
     fn cleans_dump_tags_without_erasing_hacks_or_subtitles() {
         assert_eq!(
@@ -125,5 +126,18 @@ mod tests {
         );
         assert_eq!(title(Path::new("A & B.zip")).unwrap(), "A & B");
         assert!(title(Path::new("(USA).zip")).is_err());
+    }
+
+    #[test]
+    fn scans_rvz_and_accepts_common_extension_separators() {
+        let root = tempfile::tempdir().unwrap();
+        let rvz = root.path().join("Game.rvz");
+        let zip = root.path().join("Other.ZIP");
+        let ignored = root.path().join("readme.txt");
+        fs::write(&rvz, b"rom").unwrap();
+        fs::write(&zip, b"rom").unwrap();
+        fs::write(&ignored, b"text").unwrap();
+
+        assert_eq!(scan(root.path(), ".rvz; ZIP").unwrap(), vec![rvz, zip]);
     }
 }

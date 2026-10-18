@@ -14,7 +14,7 @@ The app uses `eframe/egui` and the desktop portal file picker through `rfd`. It 
 
 ## Getting started
 
-1. In **Collection**, add one or more system ROM folders and choose artwork output folders. Enable **Arcade** beside any MAME/FBNeo system.
+1. In **Collection**, add one or more system ROM folders and choose artwork output folders. Enable **Arcade** beside any MAME/FBNeo system. Turn on **Use OnionOS folders and filenames** here for `<ROM folder>/Imgs/Game.png` output.
 2. In **Connection**, paste your personal [SteamGridDB API key](https://www.steamgriddb.com/profile/preferences/api). You can also provide it using `STEAMGRIDDB_API_KEY`. By default the key stays in memory only. To keep it between sessions, enable **Remember this key securely** and click **Save key securely**; it is stored in the system credential wallet (KWallet on KDE), not in app settings, cache or logs.
 3. In **Artwork**, choose one of SteamGridDB's artwork types: covers, banners/heroes, logos or icons. Choose output dimensions and naming options. **Turbo mode** automatically uses the first game result and highest-ranked artwork, skipping game confirmation and gallery previews. It is suggested for large collections. Set concurrent searches/downloads from 1 to 8; higher values may use more bandwidth or encounter API throttling.
 4. In **Gamelist**, choose the export format and whether to generate lists after downloading.
@@ -34,13 +34,15 @@ The **Artwork** page provides:
 | Square | 250 × 250 |
 | Landscape | 250 × 180 |
 
-These presets enable **Use OnionOS folder and filenames**: `Game.zip` produces `<ROM folder>/Imgs/Game.png`. Letter case, region tags and subfolders are retained in artwork filenames. The image fits within a transparent canvas with its aspect ratio preserved and no cropping. The square and landscape layouts are convenience presets within the same 250 × 360 area.
+These presets enable **Use OnionOS folders and filenames** in **Collection**: `Game.zip` produces `<ROM folder>/Imgs/Game.png`. Letter case, region tags and subfolders are retained in artwork filenames. The image fits within a transparent canvas with its aspect ratio preserved and no cropping. The square and landscape layouts are convenience presets within the same 250 × 360 area.
 
 ![OnionOS artwork presets](docs/interface-onion-artwork.png)
 
 Add each system folder separately (click **Add system folder** once per system), rather than selecting the entire `Roms` directory. You can set an independent artwork output folder for each system; otherwise, systems share the optional output base in separate system-named subfolders. With OnionOS naming enabled, the `Imgs` output folder follows each ROM folder automatically. Changing a filename convention does not rename or remove existing artwork. If two ROMs would produce the same image filename, including case-only collisions on FAT cards, the operation stops before downloading or exporting.
 
 With OnionOS naming disabled, the selected output folder is used and ROM extensions remain in image names: `Game.zip` produces `Game.zip.png`. This supports the original naming convention.
+
+The **Collection → File types** list starts with common extensions for Nintendo, Sega, Sony, arcade and computer systems, including `.rvz`, `.chd`, `.cue`, `.iso`, `.pbp`, `.zip` and `.7z`. Add extensions separated by commas, spaces or semicolons; the leading dot is optional. Archives are identified by their filename and are not extracted.
 
 ## Game lists
 

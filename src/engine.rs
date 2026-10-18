@@ -53,7 +53,7 @@ impl Default for Settings {
         Self {
             root: PathBuf::new(),
             output: PathBuf::new(),
-            extensions: "nes,sfc,smc,gb,gbc,gba,md,gen,sms,gg,pce,nds,z64,n64,v64,iso,chd,pbp,zip"
+            extensions: "nes,unf,unif,fds,sfc,smc,gb,gbc,gba,nds,n64,z64,v64,3ds,cia,md,gen,smd,32x,sms,gg,pce,sgx,a26,a52,a78,lnx,j64,jag,ngp,ngc,ws,wsc,d64,d71,d81,t64,tap,prg,adf,iso,cso,chd,cue,bin,pbp,m3u,cdi,gdi,rvz,wbfs,wud,wux,xci,nsp,zip,7z"
                 .into(),
             kind: ArtworkType::Grid,
             width: 250,

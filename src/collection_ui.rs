@@ -22,6 +22,11 @@ pub(crate) fn draw(
     ui.add_space(8.0);
     crate::card(ui, |ui| {
         ui.label(RichText::new("System folders").strong());
+        ui.checkbox(
+            &mut settings.onion_images,
+            "Use OnionOS folders and filenames",
+        )
+        .on_hover_text("Saves artwork to <ROM folder>/Imgs/Game.png for Game.zip. Preserves aspect ratio without cropping. Select the list format on the Gamelist page.");
         if ui.button("Add system folder").clicked()
             && let Some(path) = rfd::FileDialog::new().pick_folder()
         {
@@ -113,7 +118,7 @@ pub(crate) fn draw(
         );
         egui::CollapsingHeader::new("File types").show(ui, |ui| {
             ui.add(egui::TextEdit::singleline(&mut settings.extensions).desired_width(f32::INFINITY));
-            crate::muted(ui, "Comma-separated extensions. ZIPs use the archive filename without extracting its contents.");
+            crate::muted(ui, "ROM extensions separated by commas, spaces or semicolons; a leading dot is optional. Archives are matched by filename without extracting their contents.");
         });
         ui.checkbox(
             &mut settings.only_missing,

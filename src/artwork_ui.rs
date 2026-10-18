@@ -80,11 +80,6 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
                 }
             }
         });
-        ui.checkbox(
-            &mut settings.onion_images,
-            "Use OnionOS folder and filenames",
-        )
-        .on_hover_text("Saves to <ROM folder>/Imgs/Game.png for Game.zip. Preserves aspect ratio without cropping. Select the list format on the Gamelist page.");
         ui.separator();
         ui.label(egui::RichText::new("Artwork type").strong());
         egui::ComboBox::from_id_salt("kind")
