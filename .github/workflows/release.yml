@@ -28,7 +28,7 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends bash build-essential ca-certificates curl file git libasound2-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev pkg-config
+          apt-get install -y --no-install-recommends bash build-essential ca-certificates curl file git libasound2-dev libdbus-1-dev libgl1-mesa-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxinerama-dev libxkbcommon-dev libxrandr-dev pkg-config
       - uses: actions/checkout@v4
       - name: Install Rust
         run: |

@@ -97,7 +97,7 @@ To compile the application yourself, install Rust stable and the platform build 
 cargo build --release --locked
 ```
 
-The executable is written to `target/release/rom-art-rs` on Linux and `target/release/rom-art-rs.exe` on Windows. Linux builds need a C compiler, `pkg-config`, and the X11/Wayland development packages (on Debian: `build-essential pkg-config libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libgl1-mesa-dev libasound2-dev`). Windows builds need the Rust MSVC toolchain and Visual Studio Build Tools with the C++ build tools workload.
+The executable is written to `target/release/rom-art-rs` on Linux and `target/release/rom-art-rs.exe` on Windows. Linux builds need a C compiler, `pkg-config`, and the X11/Wayland/Secret Service development packages (on Debian: `build-essential pkg-config libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxcursor-dev libxinerama-dev libxi-dev libgl1-mesa-dev libasound2-dev libdbus-1-dev`). Windows builds need the Rust MSVC toolchain and Visual Studio Build Tools with the C++ build tools workload.
 
 To package a Linux AppImage manually, use a native machine of the target architecture, preferably Debian 12, and download the matching `appimagetool` and `runtime` from the [official AppImageKit](https://github.com/AppImage/AppImageKit/releases) and [type2-runtime](https://github.com/AppImage/type2-runtime/releases) releases. Set `ROM_SCRAPPER_ARCH`, `APPIMAGE_TOOL_BIN`, and `APPIMAGE_RUNTIME_FILE` to `x86_64` or `aarch64` and their downloaded file paths, then run `bash scripts/build-appimage.sh`. The script builds the release binary and writes the AppImage to `dist/`.
 
