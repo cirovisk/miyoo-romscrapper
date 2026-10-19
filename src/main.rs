@@ -2,6 +2,7 @@ mod artwork_ui;
 mod collection_ui;
 mod connection_ui;
 mod gamelist_ui;
+mod profiles;
 
 use eframe::egui::{self, Color32, RichText};
 use keyring::Entry;
@@ -54,12 +55,25 @@ struct Review {
     can_back_to_game: bool,
     answer: mpsc::Sender<ReviewAction>,
 }
+
+enum Operation {
+    Download,
+    Gamelist,
+    Import(rom_art_rs::local_art::ImportPreview),
+    OrphanReport,
+}
+
 struct App {
     settings: Settings,
     artwork_width_input: String,
     artwork_height_input: String,
     roots: Vec<collection_ui::SystemFolder>,
     output: String,
+    local_artwork_folder: String,
+    profiles: Vec<profiles::DeviceProfile>,
+    active_profile: Option<String>,
+    profile_name: String,
+    profile_message: Option<String>,
     receiver: Option<mpsc::Receiver<Event>>,
     stop: Arc<AtomicBool>,
     logs: Vec<String>,
@@ -70,6 +84,7 @@ struct App {
     tab: usize,
     review: Option<Review>,
     artwork_review: Option<artwork_ui::ArtworkChoice>,
+    import_preview: Option<rom_art_rs::local_art::ImportPreview>,
     remember_api_key: bool,
     credential_status: Option<String>,
 }
@@ -94,12 +109,24 @@ impl Default for App {
         } else {
             environment_key
         };
+        let (profiles, profile_message) = match profiles::load() {
+            Ok(profiles) => (profiles, None),
+            Err(error) => (
+                Vec::new(),
+                Some(format!("Could not load device profiles: {error}")),
+            ),
+        };
         Self {
             settings,
             artwork_width_input: "250".into(),
             artwork_height_input: "360".into(),
             roots: Vec::new(),
             output: String::new(),
+            local_artwork_folder: String::new(),
+            profiles,
+            active_profile: None,
+            profile_name: String::new(),
+            profile_message,
             receiver: None,
             stop: Arc::new(AtomicBool::new(false)),
             logs: vec!["Ready to organize artwork for your collection.".into()],
@@ -110,6 +137,7 @@ impl Default for App {
             tab: 0,
             review: None,
             artwork_review: None,
+            import_preview: None,
             remember_api_key,
             credential_status,
         }
@@ -189,6 +217,7 @@ fn settings_for_roots(
             let mut settings = base.clone();
             settings.root = PathBuf::from(&root.path);
             settings.arcade_mode = root.arcade;
+            settings.system_id = root.system_id.clone();
             if !root.output.trim().is_empty() {
                 settings.output = PathBuf::from(root.output.trim());
             } else {
@@ -228,6 +257,203 @@ fn effective_settings(settings: &Settings) -> Settings {
 }
 
 impl App {
+    fn preview_import(&mut self) {
+        let jobs = settings_for_roots(
+            &effective_settings(&self.settings),
+            &self.roots,
+            &PathBuf::from(self.output.trim()),
+        );
+        match rom_art_rs::local_art::preview(&jobs, Path::new(self.local_artwork_folder.trim())) {
+            Ok(preview) => {
+                self.import_preview = Some(preview);
+            }
+            Err(error) => self
+                .logs
+                .push(format!("Could not preview local art: {error}")),
+        }
+    }
+
+    fn import_preview_window(&mut self, ctx: &egui::Context) {
+        let mut start_import = false;
+        let mut close = false;
+        if let Some(preview) = &mut self.import_preview {
+            egui::Window::new("Review local artwork import")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(760.0)
+                .default_height(560.0)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "{} matches · {} ambiguous · {} unmatched · {} existing images kept",
+                        preview.items.len(),
+                        preview.ambiguous.len(),
+                        preview.unmatched,
+                        preview.kept
+                    ));
+                    ui.label(
+                        "Ambiguous filenames are left untouched until you choose a source image.",
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(430.0)
+                        .show(ui, |ui| {
+                            for item in preview.items.iter().take(40) {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        item.rom.file_name().unwrap_or_default().to_string_lossy(),
+                                    );
+                                    ui.label("←");
+                                    ui.label(item.source.display().to_string());
+                                });
+                            }
+                            if preview.items.len() > 40 {
+                                muted(
+                                    ui,
+                                    &format!("and {} more matches…", preview.items.len() - 40),
+                                );
+                            }
+                            for (index, item) in preview.ambiguous.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        item.rom.file_name().unwrap_or_default().to_string_lossy(),
+                                    );
+                                    egui::ComboBox::from_id_salt(("import_choice", index))
+                                        .selected_text(item.selected.as_ref().map_or_else(
+                                            || "Skip ambiguous match".to_owned(),
+                                            |path| path.display().to_string(),
+                                        ))
+                                        .width(390.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(item.selected.is_none(), "Skip")
+                                                .clicked()
+                                            {
+                                                item.selected = None;
+                                            }
+                                            for source in &item.candidates {
+                                                if ui
+                                                    .selectable_label(
+                                                        item.selected.as_ref() == Some(source),
+                                                        source.display().to_string(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    item.selected = Some(source.clone());
+                                                }
+                                            }
+                                        });
+                                });
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !preview.selected_items().is_empty(),
+                                egui::Button::new("Import selected artwork"),
+                            )
+                            .clicked()
+                        {
+                            start_import = true;
+                        }
+                    });
+                });
+        }
+        if close {
+            self.import_preview = None;
+        } else if start_import && let Some(preview) = self.import_preview.take() {
+            self.start(Operation::Import(preview));
+        }
+    }
+
+    fn draw_profiles(&mut self, ui: &mut egui::Ui) {
+        crate::card(ui, |ui| {
+            ui.label(RichText::new("Device profile").strong());
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("device_profile")
+                    .selected_text(self.active_profile.as_deref().unwrap_or("Choose a profile"))
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for profile in &self.profiles {
+                            if ui
+                                .selectable_label(
+                                    self.active_profile.as_deref() == Some(&profile.name),
+                                    &profile.name,
+                                )
+                                .clicked()
+                            {
+                                profile.apply_to(
+                                    &mut self.roots,
+                                    &mut self.output,
+                                    &mut self.local_artwork_folder,
+                                    &mut self.settings,
+                                );
+                                self.active_profile = Some(profile.name.clone());
+                                self.profile_name = profile.name.clone();
+                                self.artwork_width_input = self.settings.width.to_string();
+                                self.artwork_height_input = self.settings.height.to_string();
+                            }
+                        }
+                    });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.profile_name)
+                        .desired_width(180.0)
+                        .hint_text("Name this device"),
+                );
+                if ui.button("Save profile").clicked() {
+                    let name = self.profile_name.trim().to_owned();
+                    if name.is_empty() {
+                        self.profile_message = Some("Enter a profile name first.".into());
+                    } else {
+                        let profile = profiles::DeviceProfile::capture(
+                            name.clone(),
+                            &self.roots,
+                            &self.output,
+                            &self.local_artwork_folder,
+                            &self.settings,
+                        );
+                        if let Some(existing) = self.profiles.iter_mut().find(|p| p.name == name) {
+                            *existing = profile;
+                        } else {
+                            self.profiles.push(profile);
+                        }
+                        match profiles::save(&self.profiles) {
+                            Ok(()) => {
+                                self.active_profile = Some(name);
+                                self.profile_message =
+                                    Some("Profile saved on this computer.".into());
+                            }
+                            Err(error) => {
+                                self.profile_message =
+                                    Some(format!("Could not save profile: {error}"))
+                            }
+                        }
+                    }
+                }
+                if self.active_profile.is_some() && ui.button("Delete").clicked() {
+                    let selected = self.active_profile.take().unwrap();
+                    self.profiles.retain(|profile| profile.name != selected);
+                    self.profile_name.clear();
+                    match profiles::save(&self.profiles) {
+                        Ok(()) => self.profile_message = Some("Profile deleted.".into()),
+                        Err(error) => {
+                            self.profile_message =
+                                Some(format!("Could not save profile changes: {error}"))
+                        }
+                    }
+                }
+            });
+            crate::muted(
+                ui,
+                "Profiles save systems, folders, artwork and list options. API keys are never included.",
+            );
+            if let Some(message) = &self.profile_message {
+                crate::muted(ui, message);
+            }
+        });
+    }
+
     fn paths_ready(&self) -> bool {
         !self.roots.is_empty()
             && (self.settings.onion_images
@@ -236,7 +462,7 @@ impl App {
                     .iter()
                     .all(|root| !root.output.trim().is_empty() || !self.output.trim().is_empty()))
     }
-    fn start(&mut self, local_gamelist: bool) {
+    fn start(&mut self, operation: Operation) {
         let base_settings = effective_settings(&self.settings);
         let jobs = settings_for_roots(
             &base_settings,
@@ -253,6 +479,20 @@ impl App {
         self.logs.clear();
         std::thread::spawn(move || {
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Operation::Import(preview) = &operation {
+                    let _ = tx.send(Event::Log(format!(
+                        "Import batch: {} local artworks",
+                        preview.selected_items().len()
+                    )));
+                    let result =
+                        rom_art_rs::engine::import_local_artwork(preview.clone(), &stop, |event| {
+                            let _ = tx.send(event);
+                        });
+                    if let Err(error) = result {
+                        let _ = tx.send(Event::Log(format!("Local import failed: {error}")));
+                    }
+                    return;
+                }
                 let totals = Cell::new([0usize; 4]);
                 for (index, settings) in jobs.into_iter().enumerate() {
                     if stop.load(Ordering::Relaxed) {
@@ -295,10 +535,28 @@ impl App {
                                 let _ = tx.send(event);
                             }
                         };
-                        if local_gamelist {
-                            generate_local_gamelist(settings, &stop, emit)
-                        } else {
-                            run(settings, &stop, emit)
+                        match &operation {
+                            Operation::Download => run(settings, &stop, emit),
+                            Operation::Gamelist => generate_local_gamelist(settings, &stop, emit),
+                            Operation::OrphanReport => {
+                                match rom_art_rs::engine::find_orphan_artwork(&settings) {
+                                    Ok(orphans) => {
+                                        let _ = tx.send(Event::Log(format!(
+                                            "{} orphan artwork files found in {system}",
+                                            orphans.len()
+                                        )));
+                                        for path in orphans {
+                                            let _ = tx.send(Event::Log(format!(
+                                                "Orphan artwork candidate: {}",
+                                                path.display()
+                                            )));
+                                        }
+                                        Ok(())
+                                    }
+                                    Err(error) => Err(error),
+                                }
+                            }
+                            Operation::Import(_) => unreachable!(),
                         }
                     };
                     match result {
@@ -312,7 +570,7 @@ impl App {
                     }
                     let _ = tx.send(Event::SystemProgress(index + 1, job_count, None));
                 }
-                if !local_gamelist {
+                if matches!(&operation, Operation::Download) {
                     let [saved, skipped, no_match, failed] = totals.get();
                     let _ = tx.send(Event::Log(format!(
                         "Search complete: {} images saved, {} kept or skipped, {} ROMs had no game match, {} need review",
@@ -576,7 +834,7 @@ impl App {
                             )
                             .clicked()
                         {
-                            self.start(false);
+                            self.start(Operation::Download);
                         }
                     });
                 });
@@ -715,12 +973,25 @@ impl App {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add_enabled_ui(!busy, |ui| match self.tab {
-                        0 => collection_ui::draw(
-                            ui,
-                            &mut self.settings,
-                            &mut self.roots,
-                            &mut self.output,
-                        ),
+                        0 => {
+                            self.draw_profiles(ui);
+                            let action = collection_ui::draw(
+                                ui,
+                                &mut self.settings,
+                                &mut self.roots,
+                                &mut self.output,
+                                &mut self.local_artwork_folder,
+                            );
+                            match action {
+                                Some(collection_ui::CollectionAction::PreviewLocalArtwork) => {
+                                    self.preview_import();
+                                }
+                                Some(collection_ui::CollectionAction::PreviewOrphanArtwork) => {
+                                    self.start(Operation::OrphanReport);
+                                }
+                                None => {}
+                            }
+                        }
                         1 => artwork_ui::settings_panel(
                             ui,
                             &mut self.settings,
@@ -730,7 +1001,7 @@ impl App {
                         2 => {
                             let paths_ready = self.paths_ready();
                             if gamelist_ui::draw(ui, &mut self.settings, paths_ready) {
-                                self.start(true);
+                                self.start(Operation::Gamelist);
                             }
                         }
                         _ => connection_ui::draw(
@@ -745,6 +1016,7 @@ impl App {
                 });
             });
         self.review_window(ctx);
+        self.import_preview_window(ctx);
         artwork_ui::review_window(ctx, &mut self.artwork_review);
     }
 }
@@ -803,11 +1075,13 @@ mod tests {
                 path: "/roms/GBA".into(),
                 output: String::new(),
                 arcade: false,
+                system_id: "GBA".into(),
             },
             collection_ui::SystemFolder {
                 path: "/backup/GBA".into(),
                 output: String::new(),
                 arcade: true,
+                system_id: "ARCADE".into(),
             },
         ];
         let jobs = settings_for_roots(&settings, &roots, Path::new("/artwork"));
@@ -846,6 +1120,7 @@ mod tests {
             path: "/roms/GBA".into(),
             output: "/artwork/custom-gba".into(),
             arcade: false,
+            system_id: "GBA".into(),
         }];
         let jobs = settings_for_roots(&settings, &roots, Path::new("/artwork/shared"));
 

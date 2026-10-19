@@ -9,6 +9,9 @@ Desktop app that downloads ROM artwork from [SteamGridDB](https://www.steamgridd
 - Process multiple system folders, with separate artwork output paths and arcade identification for MAME/FBNeo.
 - Search SteamGridDB, review matches and artwork in the gallery, or choose a local image. Unmatched ROMs are skipped and counted.
 - Use Turbo mode to accept the first game match and top artwork automatically. Choose 1–8 concurrent workers.
+- Save named device profiles with system IDs and artwork settings; OnionOS system folders can be detected automatically.
+- Preview and bulk-import local artwork, with explicit choices when several images match a ROM.
+- Limit a run to ROMs without artwork or to new/changed ROMs. Preview orphan artwork files without deleting them.
 - Export EmulationStation `gamelist.xml`, OnionOS `miyoogamelist.xml`, or both. Existing entries and metadata are preserved.
 - Back up files before replacing artwork or game lists. ROM files are never changed.
 

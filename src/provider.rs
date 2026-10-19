@@ -29,7 +29,7 @@ pub struct Media {
     pub score: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ArtworkType {
     Grid,
     Hero,

@@ -13,7 +13,7 @@ pub struct Entry {
     pub image: Option<PathBuf>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Format {
     EmulationStation,
     OnionOS,

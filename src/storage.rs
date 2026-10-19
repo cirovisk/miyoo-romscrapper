@@ -57,3 +57,17 @@ pub fn save_with_backup(
     save_atomic(path, bytes, overwrite)?;
     Ok(backup)
 }
+
+pub fn app_data_dir() -> Result<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    }
+    .context("Could not locate the application settings directory")?;
+    Ok(base.join("Miyoo ROMScrapper"))
+}

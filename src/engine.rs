@@ -2,7 +2,7 @@ use crate::{
     artwork::{self, decode, fit},
     provider::{ArtworkType, Candidate, Credentials, Provider, ServiceStopped},
     rom::{cancelled, scan, title},
-    storage::save_with_backup,
+    storage::{save_atomic, save_with_backup},
     worker::{
         Event, ResolveOptions, Resolved, initial_search_query, request_local_image,
         resolve_with_initial_search,
@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use image::ImageFormat;
+use serde::{Deserialize, Serialize};
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -21,11 +22,23 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 
 pub const DEFAULT_CONCURRENCY: usize = 3;
 pub const MAX_CONCURRENCY: usize = 8;
+const INCREMENTAL_STATE_FILE: &str = ".rom-art-state.json";
+
+#[derive(Default, Serialize, Deserialize)]
+struct IncrementalState {
+    files: HashMap<String, RomFingerprint>,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct RomFingerprint {
+    size: u64,
+    modified_ns: Option<u128>,
+}
 
 #[derive(Clone)]
 pub struct Settings {
@@ -41,8 +54,10 @@ pub struct Settings {
     pub turbo_mode: bool,
     pub concurrency: usize,
     pub arcade_mode: bool,
+    pub system_id: String,
     pub choose_artwork: bool,
     pub only_missing: bool,
+    pub only_new_or_changed: bool,
     pub gamelist: bool,
     pub onion_images: bool,
     pub gamelist_format: crate::gamelist::Format,
@@ -64,8 +79,10 @@ impl Default for Settings {
             turbo_mode: false,
             concurrency: DEFAULT_CONCURRENCY,
             arcade_mode: false,
+            system_id: String::new(),
             choose_artwork: false,
             only_missing: false,
+            only_new_or_changed: false,
             gamelist: true,
             onion_images: false,
             gamelist_format: crate::gamelist::Format::EmulationStation,
@@ -106,6 +123,84 @@ pub fn image_path(settings: &Settings, rom: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+fn state_key(root: &Path, rom: &Path) -> String {
+    rom.strip_prefix(root)
+        .unwrap_or(rom)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn fingerprint(path: &Path) -> Result<RomFingerprint> {
+    let metadata = fs::metadata(path)?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos());
+    Ok(RomFingerprint {
+        size: metadata.len(),
+        modified_ns,
+    })
+}
+
+fn load_incremental_state(root: &Path) -> Result<IncrementalState> {
+    let path = root.join(INCREMENTAL_STATE_FILE);
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| {
+            format!(
+                "Invalid incremental state {}; file preserved",
+                path.display()
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(IncrementalState::default())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn update_incremental_state(settings: &Settings) -> Result<()> {
+    let mut state = IncrementalState::default();
+    for rom in scan(&settings.root, &settings.extensions)? {
+        if image_path(settings, &rom).is_ok_and(|image| image.is_file()) {
+            state
+                .files
+                .insert(state_key(&settings.root, &rom), fingerprint(&rom)?);
+        }
+    }
+    let path = settings.root.join(INCREMENTAL_STATE_FILE);
+    save_atomic(&path, &serde_json::to_vec_pretty(&state)?, true)?;
+    Ok(())
+}
+
+fn select_roms(settings: &Settings, all_paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let incremental = if settings.only_new_or_changed {
+        Some(load_incremental_state(&settings.root)?)
+    } else {
+        None
+    };
+    let mut selected = Vec::new();
+    for rom in all_paths {
+        let missing = !image_path(settings, rom)?.is_file();
+        let changed = if let Some(state) = &incremental {
+            let key = state_key(&settings.root, rom);
+            state.files.get(&key) != Some(&fingerprint(rom)?)
+        } else {
+            false
+        };
+        if if settings.only_new_or_changed {
+            missing || changed
+        } else if settings.only_missing {
+            missing
+        } else {
+            true
+        } {
+            selected.push(rom.clone());
+        }
+    }
+    Ok(selected)
+}
+
 fn validate_image_paths(settings: &Settings, paths: &[PathBuf]) -> Result<()> {
     let mut outputs = HashMap::new();
     for rom in paths {
@@ -124,6 +219,53 @@ fn validate_image_paths(settings: &Settings, paths: &[PathBuf]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn find_orphan_artwork(settings: &Settings) -> Result<Vec<PathBuf>> {
+    let output = settings.image_directory();
+    if !output.is_dir() {
+        return Ok(Vec::new());
+    }
+    let expected = scan(&settings.root, &settings.extensions)?
+        .iter()
+        .map(|rom| image_path(settings, rom))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .map(|path| normalized_path(&path, settings.onion_images))
+        .collect::<std::collections::HashSet<_>>();
+    let mut orphans = Vec::new();
+    for entry in walkdir::WalkDir::new(&output)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !entry.file_name().to_string_lossy().starts_with('.')
+        })
+    {
+        let entry = entry?;
+        if !entry.file_type().is_file()
+            || !entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+            || entry.file_name().to_string_lossy().contains(".backup-")
+        {
+            continue;
+        }
+        if !expected.contains(&normalized_path(entry.path(), settings.onion_images)) {
+            orphans.push(entry.path().to_path_buf());
+        }
+    }
+    orphans.sort();
+    Ok(orphans)
+}
+
+fn normalized_path(path: &Path, case_insensitive: bool) -> String {
+    let value = path.to_string_lossy().replace('\\', "/");
+    if case_insensitive {
+        value.to_ascii_lowercase()
+    } else {
+        value
+    }
 }
 
 fn write_gamelist(
@@ -179,6 +321,76 @@ pub fn generate_local_gamelist(
     write_gamelist(&settings, &paths, &HashMap::new(), &emit)
 }
 
+pub fn import_local_artwork(
+    preview: crate::local_art::ImportPreview,
+    stop: &AtomicBool,
+    emit: impl Fn(Event),
+) -> Result<()> {
+    let items = preview.selected_items();
+    let unresolved = preview.ambiguous.len()
+        - preview
+            .ambiguous
+            .iter()
+            .filter(|item| item.selected.is_some())
+            .count();
+    let mut saved = 0;
+    let mut skipped = preview.kept;
+    let mut failed = 0;
+    let no_match = preview.unmatched + unresolved;
+    emit(Event::Log(format!(
+        "Importing {} local images; {} unmatched or ambiguous",
+        items.len(),
+        no_match
+    )));
+    for (index, item) in items.iter().enumerate() {
+        cancelled(stop)?;
+        if item.output.is_file() && !item.overwrite {
+            skipped += 1;
+        } else {
+            let result = (|| -> Result<Option<PathBuf>> {
+                let image = fit(&decode(&fs::read(&item.source)?)?, item.width, item.height);
+                let mut png = Cursor::new(Vec::new());
+                image.write_to(&mut png, ImageFormat::Png)?;
+                save_with_backup(
+                    &item.output,
+                    png.get_ref(),
+                    item.overwrite,
+                    item.backup_existing,
+                )
+            })();
+            match result {
+                Ok(backup) => {
+                    saved += 1;
+                    if let Some(backup) = backup {
+                        emit(Event::Log(format!("Artwork backup: {}", backup.display())));
+                    }
+                    emit(Event::Log(format!(
+                        "Imported: {} → {}",
+                        item.source.display(),
+                        item.output.display()
+                    )));
+                    emit(Event::Preview(item.output.clone()));
+                }
+                Err(error) => {
+                    failed += 1;
+                    emit(Event::Log(format!(
+                        "Could not import {}: {error}",
+                        item.source.display()
+                    )));
+                }
+            }
+        }
+        emit(Event::Progress(index + 1, items.len()));
+    }
+    emit(Event::Summary {
+        saved,
+        skipped,
+        no_match,
+        failed,
+    });
+    Ok(())
+}
+
 pub fn run_with_provider(
     settings: Settings,
     provider: &Provider,
@@ -187,7 +399,18 @@ pub fn run_with_provider(
 ) -> Result<()> {
     let cache_directory = settings.image_directory().join(".rom-art-cache");
     let mut cleanup = CacheCleanup(cache_directory.clone());
+    let state_settings = settings.clone();
     let result = run_with_provider_inner(settings, provider, stop, &emit, &cache_directory);
+    if state_settings.only_new_or_changed
+        && let Err(error) = update_incremental_state(&state_settings)
+    {
+        emit(Event::Log(format!(
+            "Could not update incremental scan state: {error}"
+        )));
+        if result.is_ok() {
+            return Err(error);
+        }
+    }
     if let Err(error) = cleanup.clear() {
         emit(Event::Log(format!(
             "Could not remove temporary artwork cache: {error}"
@@ -502,15 +725,7 @@ fn run_with_provider_inner(
         bail!("Allowed dimensions: 1 to 4096");
     }
     let all_paths = scan(&settings.root, &settings.extensions)?;
-    let paths = if settings.only_missing {
-        all_paths
-            .iter()
-            .filter(|&rom| image_path(&settings, rom).is_ok_and(|p| !p.is_file()))
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        all_paths.clone()
-    };
+    let paths = select_roms(&settings, &all_paths)?;
     validate_image_paths(&settings, &paths)?;
     let total = paths.len();
     emit(Event::Log(format!("Found {total} ROMs")));
@@ -770,6 +985,66 @@ mod tests {
         assert!(save_with_backup(&path, b"v5", false, true).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"v4");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn incremental_state_skips_unchanged_roms_and_reselects_changed_files() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("artwork");
+        let rom = root.path().join("Game.zip");
+        fs::write(&rom, b"one").unwrap();
+        let settings = Settings {
+            root: root.path().to_path_buf(),
+            output,
+            extensions: "zip".into(),
+            only_new_or_changed: true,
+            ..Settings::default()
+        };
+        let image = image_path(&settings, &rom).unwrap();
+        fs::create_dir_all(image.parent().unwrap()).unwrap();
+        fs::write(&image, b"existing image").unwrap();
+
+        assert_eq!(
+            select_roms(&settings, std::slice::from_ref(&rom)).unwrap(),
+            vec![rom.clone()]
+        );
+        update_incremental_state(&settings).unwrap();
+        assert!(
+            select_roms(&settings, std::slice::from_ref(&rom))
+                .unwrap()
+                .is_empty()
+        );
+
+        fs::write(&rom, b"changed size").unwrap();
+        assert_eq!(
+            select_roms(&settings, std::slice::from_ref(&rom)).unwrap(),
+            vec![rom]
+        );
+    }
+
+    #[test]
+    fn orphan_report_never_treats_backups_or_hidden_cache_files_as_orphans() {
+        let root = tempfile::tempdir().unwrap();
+        let rom = root.path().join("Game.zip");
+        fs::write(&rom, b"rom").unwrap();
+        let settings = Settings {
+            root: root.path().into(),
+            output: root.path().join("artwork"),
+            extensions: "zip".into(),
+            ..Settings::default()
+        };
+        let expected = image_path(&settings, &rom).unwrap();
+        fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        fs::write(&expected, b"image").unwrap();
+        fs::write(settings.output.join("Deleted.zip.png"), b"orphan").unwrap();
+        fs::write(settings.output.join("Game.zip.png.backup-a.png"), b"backup").unwrap();
+        fs::create_dir_all(settings.output.join(".rom-art-cache")).unwrap();
+        fs::write(settings.output.join(".rom-art-cache/cache.png"), b"cache").unwrap();
+
+        assert_eq!(
+            find_orphan_artwork(&settings).unwrap(),
+            vec![settings.output.join("Deleted.zip.png")]
+        );
     }
     #[test]
     fn existing_files_remain_untouched() {

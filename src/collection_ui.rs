@@ -1,11 +1,33 @@
 use eframe::egui::{self, RichText};
-use rom_art_rs::engine::Settings;
+use rom_art_rs::{engine::Settings, systems::ONION_SYSTEMS};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct SystemFolder {
     pub path: String,
     pub output: String,
     pub arcade: bool,
+    #[serde(default)]
+    pub system_id: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollectionAction {
+    PreviewLocalArtwork,
+    PreviewOrphanArtwork,
+}
+
+fn detect_system_id(path: &str) -> String {
+    let folder = PathBuf::from(path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_uppercase();
+    ONION_SYSTEMS
+        .iter()
+        .find(|system| system.id == folder)
+        .map_or_else(String::new, |system| system.id.to_owned())
 }
 
 pub(crate) fn draw(
@@ -13,7 +35,9 @@ pub(crate) fn draw(
     settings: &mut Settings,
     roots: &mut Vec<SystemFolder>,
     output: &mut String,
-) {
+    local_artwork: &mut String,
+) -> Option<CollectionAction> {
+    let mut action = None;
     ui.heading("Your collection");
     crate::muted(
         ui,
@@ -33,10 +57,12 @@ pub(crate) fn draw(
             for path in paths {
                 let path = path.display().to_string();
                 if !roots.iter().any(|folder| folder.path == path) {
+                    let system_id = detect_system_id(&path);
                     roots.push(SystemFolder {
+                        arcade: system_id == "ARCADE",
+                        system_id,
                         path,
                         output: String::new(),
-                        arcade: false,
                     });
                 }
             }
@@ -46,11 +72,11 @@ pub(crate) fn draw(
         } else {
             crate::muted(
                 ui,
-                "Select one or more system folders. Duplicate folders are ignored.",
+                "Select system types for device profiles; duplicate folders are ignored.",
             );
         }
         let mut remove = None;
-        let controls_width = 200.0;
+        let controls_width = 370.0;
         let input_width = (ui.available_width() - controls_width - 12.0).max(180.0);
         for (index, root) in roots.iter_mut().enumerate() {
             egui::Grid::new(("system_folder", index))
@@ -64,6 +90,36 @@ pub(crate) fn draw(
                             .halign(egui::Align::Min),
                     );
                     ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt(("onion_system", index))
+                            .selected_text(if root.system_id.is_empty() {
+                                "Other"
+                            } else {
+                                &root.system_id
+                            })
+                            .width(116.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(root.system_id.is_empty(), "Other")
+                                    .clicked()
+                                {
+                                    root.system_id.clear();
+                                }
+                                for system in ONION_SYSTEMS {
+                                    if ui
+                                        .selectable_label(root.system_id == system.id, system.id)
+                                        .on_hover_text(format!(
+                                            "Onionscraper platform mapping: {}",
+                                            system.platforms
+                                        ))
+                                        .clicked()
+                                    {
+                                        root.system_id = system.id.into();
+                                        if system.id == "ARCADE" {
+                                            root.arcade = true;
+                                        }
+                                    }
+                                }
+                            });
                         ui.checkbox(&mut root.arcade, "Arcade").on_hover_text(
                             "Enable MAME / FBNeo title lookup for this system folder.",
                         );
@@ -113,6 +169,47 @@ pub(crate) fn draw(
     });
     ui.add_space(4.0);
     crate::card(ui, |ui| {
+        ui.label(RichText::new("Local artwork and cleanup report").strong());
+        crate::muted(
+            ui,
+            "Match images by title from a folder, preview matches, and review orphaned PNGs without deleting them.",
+        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(local_artwork)
+                    .desired_width((ui.available_width() - 100.0).max(180.0))
+                    .hint_text("Choose an artwork folder…"),
+            );
+            if ui.button("Browse").clicked()
+                && let Some(path) = rfd::FileDialog::new().pick_folder()
+            {
+                *local_artwork = path.display().to_string();
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !roots.is_empty() && PathBuf::from(local_artwork.as_str()).is_dir(),
+                    egui::Button::new("Preview local import"),
+                )
+                .clicked()
+            {
+                action = Some(CollectionAction::PreviewLocalArtwork);
+            }
+            if ui
+                .add_enabled(
+                    !roots.is_empty(),
+                    egui::Button::new("Preview orphan artwork"),
+                )
+                .on_hover_text("Creates a report only. No files are removed.")
+                .clicked()
+            {
+                action = Some(CollectionAction::PreviewOrphanArtwork);
+            }
+        });
+    });
+    ui.add_space(4.0);
+    crate::card(ui, |ui| {
         ui.label(RichText::new("Title matching").strong());
         crate::muted(
             ui,
@@ -126,5 +223,11 @@ pub(crate) fn draw(
             &mut settings.only_missing,
             "Only process ROMs without artwork in the destination",
         );
+        ui.checkbox(
+            &mut settings.only_new_or_changed,
+            "Only process new or changed ROMs",
+        )
+        .on_hover_text("Tracks ROM size and modification time in .rom-art-state.json inside each system folder. Missing artwork is always processed. If both filters are enabled, ROMs missing artwork or changed since the last run are processed.");
     });
+    action
 }
