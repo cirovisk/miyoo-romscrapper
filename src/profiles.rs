@@ -139,6 +139,7 @@ mod tests {
             output: String::new(),
             arcade: false,
             system_id: "GB".into(),
+            nointro_dat: String::new(),
         }];
         let profile = DeviceProfile::capture(
             "Miyoo Mini".into(),

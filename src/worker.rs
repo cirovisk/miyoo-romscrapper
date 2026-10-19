@@ -28,6 +28,7 @@ pub enum Event {
     Progress(usize, usize),
     SystemProgress(usize, usize, Option<String>),
     Preview(PathBuf),
+    RenamePreview(crate::nointro::RenamePreview),
     Finished,
     Review {
         rom: PathBuf,

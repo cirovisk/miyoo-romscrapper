@@ -10,12 +10,15 @@ pub(crate) struct SystemFolder {
     pub arcade: bool,
     #[serde(default)]
     pub system_id: String,
+    #[serde(default)]
+    pub nointro_dat: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollectionAction {
-    PreviewLocalArtwork,
-    PreviewOrphanArtwork,
+    ImportLocalArtwork,
+    ReportOrphanArtwork,
+    RenameNoIntro,
 }
 
 fn detect_system_id(path: &str) -> String {
@@ -63,6 +66,7 @@ pub(crate) fn draw(
                         system_id,
                         path,
                         output: String::new(),
+                        nointro_dat: String::new(),
                     });
                 }
             }
@@ -146,12 +150,44 @@ pub(crate) fn draw(
                         }
                         ui.end_row();
                     }
+                    ui.add_sized(
+                        [input_width, 32.0],
+                        egui::TextEdit::singleline(&mut root.nointro_dat)
+                            .hint_text("Select this system's No-Intro DAT file"),
+                    );
+                    if ui
+                        .add_sized([controls_width, 32.0], egui::Button::new("Browse DAT…"))
+                        .clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("No-Intro DAT", &["dat", "xml"])
+                            .pick_file()
+                    {
+                        root.nointro_dat = path.display().to_string();
+                    }
+                    ui.end_row();
                 });
         }
         if let Some(index) = remove {
             roots.remove(index);
         }
         crate::muted(ui, "Subfolders are included.");
+        let dats_ready = !roots.is_empty()
+            && roots
+                .iter()
+                .all(|root| PathBuf::from(&root.nointro_dat).is_file());
+        if ui
+            .add_enabled(dats_ready, egui::Button::new("Preview No-Intro renaming"))
+            .on_hover_text(
+                "Matches ROM content against each system's DAT before proposing filenames.",
+            )
+            .clicked()
+        {
+            action = Some(CollectionAction::RenameNoIntro);
+        }
+        crate::muted(
+            ui,
+            "Uses exact CRC32 / SHA-1 matches. Unmatched ROMs are shown for review and never renamed automatically.",
+        );
         ui.add_space(4.0);
         if settings.onion_images {
             ui.label(RichText::new("OnionOS artwork folder").strong());
@@ -194,7 +230,7 @@ pub(crate) fn draw(
                 )
                 .clicked()
             {
-                action = Some(CollectionAction::PreviewLocalArtwork);
+                action = Some(CollectionAction::ImportLocalArtwork);
             }
             if ui
                 .add_enabled(
@@ -204,7 +240,7 @@ pub(crate) fn draw(
                 .on_hover_text("Creates a report only. No files are removed.")
                 .clicked()
             {
-                action = Some(CollectionAction::PreviewOrphanArtwork);
+                action = Some(CollectionAction::ReportOrphanArtwork);
             }
         });
     });

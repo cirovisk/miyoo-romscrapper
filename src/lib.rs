@@ -3,6 +3,7 @@ pub mod artwork;
 pub mod engine;
 pub mod gamelist;
 pub mod local_art;
+pub mod nointro;
 pub mod provider;
 pub mod rom;
 pub mod storage;

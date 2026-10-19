@@ -61,6 +61,7 @@ enum Operation {
     Gamelist,
     Import(rom_art_rs::local_art::ImportPreview),
     OrphanReport,
+    Rename(rom_art_rs::nointro::RenamePreview),
 }
 
 struct App {
@@ -85,6 +86,7 @@ struct App {
     review: Option<Review>,
     artwork_review: Option<artwork_ui::ArtworkChoice>,
     import_preview: Option<rom_art_rs::local_art::ImportPreview>,
+    nointro_preview: Option<rom_art_rs::nointro::RenamePreview>,
     remember_api_key: bool,
     credential_status: Option<String>,
 }
@@ -138,6 +140,7 @@ impl Default for App {
             review: None,
             artwork_review: None,
             import_preview: None,
+            nointro_preview: None,
             remember_api_key,
             credential_status,
         }
@@ -270,6 +273,131 @@ impl App {
             Err(error) => self
                 .logs
                 .push(format!("Could not preview local art: {error}")),
+        }
+    }
+
+    fn preview_nointro_rename(&mut self) {
+        let jobs = settings_for_roots(
+            &effective_settings(&self.settings),
+            &self.roots,
+            &PathBuf::from(self.output.trim()),
+        );
+        let dats = self
+            .roots
+            .iter()
+            .map(|root| PathBuf::from(&root.nointro_dat))
+            .collect::<Vec<_>>();
+        let (tx, rx) = mpsc::channel();
+        self.receiver = Some(rx);
+        self.logs.clear();
+        self.logs
+            .push("Scanning ROM contents against No-Intro DATs…".into());
+        std::thread::spawn(move || {
+            let mut combined = rom_art_rs::nointro::RenamePreview::default();
+            for (job, dat) in jobs.iter().zip(dats) {
+                match rom_art_rs::nointro::preview(&job.root, &job.extensions, &dat) {
+                    Ok(preview) => {
+                        combined.matches.extend(preview.matches);
+                        combined.unmatched.extend(preview.unmatched);
+                        combined.unchanged += preview.unchanged;
+                        combined.conflicts.extend(preview.conflicts);
+                    }
+                    Err(error) => {
+                        let _ = tx.send(Event::Log(format!(
+                            "Could not scan {} for No-Intro names: {error}",
+                            job.root.display()
+                        )));
+                        let _ = tx.send(Event::Finished);
+                        return;
+                    }
+                }
+            }
+            let mut targets = HashSet::new();
+            let mut unique_matches = Vec::new();
+            for item in std::mem::take(&mut combined.matches) {
+                if targets.insert(item.target.clone()) {
+                    unique_matches.push(item);
+                } else {
+                    combined.conflicts.push((item.source, item.target));
+                }
+            }
+            combined.matches = unique_matches;
+            let _ = tx.send(Event::RenamePreview(combined));
+            let _ = tx.send(Event::Finished);
+        });
+    }
+
+    fn nointro_preview_window(&mut self, ctx: &egui::Context) {
+        let mut apply = false;
+        let mut close = false;
+        if let Some(preview) = &self.nointro_preview {
+            egui::Window::new("Review No-Intro renaming")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(760.0)
+                .default_height(560.0)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "{} exact matches · {} unmatched · {} unchanged · {} conflicts",
+                        preview.matches.len(),
+                        preview.unmatched.len(),
+                        preview.unchanged,
+                        preview.conflicts.len()
+                    ));
+                    if !preview.unmatched.is_empty() {
+                        ui.label(format!(
+                            "{} ROMs did not match the selected DAT. Skip these and rename only exact matches?",
+                            preview.unmatched.len()
+                        ));
+                    }
+                    ui.label("Existing filenames and artwork are not overwritten. Existing gamelist paths are not changed; review gamelist.xml and miyoogamelist.xml after renaming.");
+                    egui::ScrollArea::vertical()
+                        .max_height(420.0)
+                        .show(ui, |ui| {
+                            for item in &preview.matches {
+                                ui.horizontal(|ui| {
+                                    ui.label(item.source.display().to_string());
+                                    ui.label("→");
+                                    ui.label(item.target.file_name().unwrap_or_default().to_string_lossy());
+                                });
+                            }
+                            for path in preview.unmatched.iter().take(80) {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(235, 170, 78),
+                                    format!("Unmatched; will be skipped: {}", path.display()),
+                                );
+                            }
+                            for (source, target) in &preview.conflicts {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(235, 110, 110),
+                                    format!("Target already exists; skipped: {} → {}", source.display(), target.display()),
+                                );
+                            }
+                        });
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                !preview.matches.is_empty(),
+                                egui::Button::new(if preview.unmatched.is_empty() {
+                                    "Rename exact matches"
+                                } else {
+                                    "Skip unmatched and rename exact matches"
+                                }),
+                            )
+                            .clicked()
+                        {
+                            apply = true;
+                        }
+                    });
+                });
+        }
+        if close {
+            self.nointro_preview = None;
+        } else if apply && let Some(preview) = self.nointro_preview.take() {
+            self.start(Operation::Rename(preview));
         }
     }
 
@@ -493,6 +621,21 @@ impl App {
                     }
                     return;
                 }
+                if let Operation::Rename(preview) = &operation {
+                    match rom_art_rs::nointro::apply(preview) {
+                        Ok(renamed) => {
+                            let _ = tx.send(Event::Log(format!(
+                                "No-Intro renaming complete: {renamed} ROMs renamed; {} unmatched ROMs skipped; {} conflicts skipped.",
+                                preview.unmatched.len(),
+                                preview.conflicts.len()
+                            )));
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Event::Log(format!("No-Intro rename failed: {error}")));
+                        }
+                    }
+                    return;
+                }
                 let totals = Cell::new([0usize; 4]);
                 for (index, settings) in jobs.into_iter().enumerate() {
                     if stop.load(Ordering::Relaxed) {
@@ -557,6 +700,7 @@ impl App {
                                 }
                             }
                             Operation::Import(_) => unreachable!(),
+                            Operation::Rename(_) => unreachable!(),
                         }
                     };
                     match result {
@@ -675,6 +819,7 @@ impl App {
                         ));
                     }
                 }
+                Event::RenamePreview(preview) => self.nointro_preview = Some(preview),
             }
         }
     }
@@ -983,11 +1128,14 @@ impl App {
                                 &mut self.local_artwork_folder,
                             );
                             match action {
-                                Some(collection_ui::CollectionAction::PreviewLocalArtwork) => {
+                                Some(collection_ui::CollectionAction::ImportLocalArtwork) => {
                                     self.preview_import();
                                 }
-                                Some(collection_ui::CollectionAction::PreviewOrphanArtwork) => {
+                                Some(collection_ui::CollectionAction::ReportOrphanArtwork) => {
                                     self.start(Operation::OrphanReport);
+                                }
+                                Some(collection_ui::CollectionAction::RenameNoIntro) => {
+                                    self.preview_nointro_rename();
                                 }
                                 None => {}
                             }
@@ -1017,6 +1165,7 @@ impl App {
             });
         self.review_window(ctx);
         self.import_preview_window(ctx);
+        self.nointro_preview_window(ctx);
         artwork_ui::review_window(ctx, &mut self.artwork_review);
     }
 }
@@ -1076,12 +1225,14 @@ mod tests {
                 output: String::new(),
                 arcade: false,
                 system_id: "GBA".into(),
+                nointro_dat: String::new(),
             },
             collection_ui::SystemFolder {
                 path: "/backup/GBA".into(),
                 output: String::new(),
                 arcade: true,
                 system_id: "ARCADE".into(),
+                nointro_dat: String::new(),
             },
         ];
         let jobs = settings_for_roots(&settings, &roots, Path::new("/artwork"));
@@ -1121,6 +1272,7 @@ mod tests {
             output: "/artwork/custom-gba".into(),
             arcade: false,
             system_id: "GBA".into(),
+            nointro_dat: String::new(),
         }];
         let jobs = settings_for_roots(&settings, &roots, Path::new("/artwork/shared"));
 

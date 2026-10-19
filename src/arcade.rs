@@ -189,7 +189,7 @@ fn parse_dat(bytes: &[u8], short_name: &str) -> Option<String> {
     None
 }
 
-fn dat_tokens(source: &str) -> Vec<String> {
+pub(crate) fn dat_tokens(source: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut chars = source.chars().peekable();
     while let Some(ch) = chars.next() {

@@ -12,8 +12,9 @@ Desktop app that downloads ROM artwork from [SteamGridDB](https://www.steamgridd
 - Save named device profiles with system IDs and artwork settings; OnionOS system folders can be detected automatically.
 - Preview and bulk-import local artwork, with explicit choices when several images match a ROM.
 - Limit a run to ROMs without artwork or to new/changed ROMs. Preview orphan artwork files without deleting them.
+- Rename ROMs from per-system No-Intro XML DAT files using exact content checksums; unmatched files are reviewed and skipped.
 - Export EmulationStation `gamelist.xml`, OnionOS `miyoogamelist.xml`, or both. Existing entries and metadata are preserved.
-- Back up files before replacing artwork or game lists. ROM files are never changed.
+- Back up files before replacing artwork or game lists. Artwork and game-list actions never modify ROM contents; optional No-Intro renaming changes filenames only.
 
 ## Quick start
 
@@ -37,6 +38,10 @@ Artwork presets use these canvas sizes and preserve image proportions without cr
 | Landscape | 250 × 180 |
 
 Enable **Use OnionOS folders and filenames** in **Collection** to save `Game.zip` artwork as `<ROM folder>/Imgs/Game.png`. Otherwise, the selected output folder is used and the extension is retained (`Game.zip.png`). Add system folders one at a time to set independent output paths. Common ROM extensions are prefilled, including `.rvz`, `.chd`, `.cue`, `.iso`, `.pbp`, `.zip` and `.7z`.
+
+## No-Intro renaming
+
+Select a No-Intro XML or ClrMamePro DAT file for each system folder, then choose **Preview No-Intro renaming**. Names come from exact SHA-1 or CRC32 content matches, including ROM files inside ZIP archives; filenames are never guessed from title similarity. The preview calls out unmatched ROMs and asks before skipping them. Existing destination names are treated as conflicts and left untouched. Existing game-list paths are not changed, so review `gamelist.xml` and `miyoogamelist.xml` after renaming. DAT files are available from [DAT-o-MATIC](https://datomatic.no-intro.org/).
 
 OnionOS game lists are saved in the ROM folder and link artwork under `Imgs/`. Existing ROMs and list entries without artwork remain in the list; entries are not automatically removed. After exporting, refresh the game list on the Miyoo with **Games → SELECT → Refresh all roms**.
 
