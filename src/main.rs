@@ -56,6 +56,8 @@ struct Review {
 }
 struct App {
     settings: Settings,
+    artwork_width_input: String,
+    artwork_height_input: String,
     roots: Vec<collection_ui::SystemFolder>,
     output: String,
     receiver: Option<mpsc::Receiver<Event>>,
@@ -94,6 +96,8 @@ impl Default for App {
         };
         Self {
             settings,
+            artwork_width_input: "250".into(),
+            artwork_height_input: "360".into(),
             roots: Vec::new(),
             output: String::new(),
             receiver: None,
@@ -717,7 +721,12 @@ impl App {
                             &mut self.roots,
                             &mut self.output,
                         ),
-                        1 => artwork_ui::settings_panel(ui, &mut self.settings),
+                        1 => artwork_ui::settings_panel(
+                            ui,
+                            &mut self.settings,
+                            &mut self.artwork_width_input,
+                            &mut self.artwork_height_input,
+                        ),
                         2 => {
                             let paths_ready = self.paths_ready();
                             if gamelist_ui::draw(ui, &mut self.settings, paths_ready) {

@@ -15,7 +15,12 @@ pub(crate) struct ArtworkChoice {
     pub answer: mpsc::Sender<ReviewAction>,
 }
 
-pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
+pub(crate) fn settings_panel(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    width_input: &mut String,
+    height_input: &mut String,
+) {
     ui.heading("Artwork");
     muted(ui, "Choose artwork that fits your library.");
     ui.add_space(8.0);
@@ -77,6 +82,8 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
             ] {
                 if ui.button(label).clicked() {
                     settings.onion_preset(width, height);
+                    *width_input = width.to_string();
+                    *height_input = height.to_string();
                 }
             }
         });
@@ -97,18 +104,10 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
         ui.separator();
         ui.label(egui::RichText::new("PNG dimensions").strong());
         ui.horizontal(|ui| {
-            ui.label("Width");
-            ui.add(
-                egui::DragValue::new(&mut settings.width)
-                    .range(1..=4096)
-                    .suffix(" px"),
-            );
-            ui.label("Height");
-            ui.add(
-                egui::DragValue::new(&mut settings.height)
-                    .range(1..=4096)
-                    .suffix(" px"),
-            );
+            edit_dimension(ui, "Width", width_input, &mut settings.width);
+            ui.label("px");
+            edit_dimension(ui, "Height", height_input, &mut settings.height);
+            ui.label("px");
         });
         ui.horizontal(|ui| {
             for (name, width, height) in [
@@ -119,12 +118,14 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
                 if ui.button(name).clicked() {
                     settings.width = width;
                     settings.height = height;
+                    *width_input = width.to_string();
+                    *height_input = height.to_string();
                 }
             }
         });
         muted(
             ui,
-            "Aspect ratio is preserved with transparent padding and no cropping.",
+            "Type exact dimensions (1–4096 px). Aspect ratio is preserved with transparent padding and no cropping.",
         );
     });
     ui.add_space(4.0);
@@ -134,6 +135,30 @@ pub(crate) fn settings_panel(ui: &mut egui::Ui, settings: &mut Settings) {
         ui.checkbox(&mut settings.backup_existing, "Back up replaced files")
             .on_hover_text("Applies to artwork and game lists. Backups stay in the same folder.");
     });
+}
+
+fn edit_dimension(ui: &mut egui::Ui, label: &str, input: &mut String, value: &mut u32) {
+    ui.label(label);
+    let id = ui.make_persistent_id(label);
+    if !ui.memory(|memory| memory.has_focus(id)) {
+        *input = value.to_string();
+    }
+    let response = ui.add_sized(
+        [88.0, 28.0],
+        egui::TextEdit::singleline(input)
+            .id(id)
+            .char_limit(4)
+            .hint_text("pixels"),
+    );
+    if response.changed()
+        && let Ok(parsed) = input.parse::<u32>()
+        && (1..=4096).contains(&parsed)
+    {
+        *value = parsed;
+    }
+    if response.lost_focus() {
+        *input = value.to_string();
+    }
 }
 
 pub(crate) fn review_window(ctx: &egui::Context, review: &mut Option<ArtworkChoice>) {
