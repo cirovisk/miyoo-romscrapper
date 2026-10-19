@@ -27,16 +27,18 @@ pub(crate) fn draw(
             "Use OnionOS folders and filenames",
         )
         .on_hover_text("Saves artwork to <ROM folder>/Imgs/Game.png for Game.zip. Preserves aspect ratio without cropping. Select the list format on the Gamelist page.");
-        if ui.button("Add system folder").clicked()
-            && let Some(path) = rfd::FileDialog::new().pick_folder()
+        if ui.button("Add system folders").clicked()
+            && let Some(paths) = rfd::FileDialog::new().pick_folders()
         {
-            let path = path.display().to_string();
-            if !roots.iter().any(|folder| folder.path == path) {
-                roots.push(SystemFolder {
-                    path,
-                    output: String::new(),
-                    arcade: false,
-                });
+            for path in paths {
+                let path = path.display().to_string();
+                if !roots.iter().any(|folder| folder.path == path) {
+                    roots.push(SystemFolder {
+                        path,
+                        output: String::new(),
+                        arcade: false,
+                    });
+                }
             }
         }
         if roots.is_empty() {
@@ -44,7 +46,7 @@ pub(crate) fn draw(
         } else {
             crate::muted(
                 ui,
-                "Add folders one at a time; click the button again for each system.",
+                "Select one or more system folders. Duplicate folders are ignored.",
             );
         }
         let mut remove = None;
